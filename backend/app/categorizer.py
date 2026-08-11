@@ -133,7 +133,6 @@ def classify_transactions(
                         "additional_categories": {
                             "type": "array",
                             "items": {"type": "string", "enum": categories},
-                            "uniqueItems": True,
                         },
                         "confidence": {"type": "number", "minimum": 0, "maximum": 1},
                     },

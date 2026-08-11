@@ -4,8 +4,9 @@ from app import categorizer
 def test_classifies_each_transaction_with_summary_topic_and_confidence(monkeypatch) -> None:
     call = {}
 
-    def fake_codex(prompt, _schema, live_search=False):
+    def fake_codex(prompt, schema, live_search=False):
         call["prompt"] = prompt
+        call["schema"] = schema
         call["live_search"] = live_search
         return {
             "classifications": [
@@ -13,7 +14,7 @@ def test_classifies_each_transaction_with_summary_topic_and_confidence(monkeypat
                     "key": "one",
                     "summary": "A monthly gym membership payment.",
                     "category": "Sports",
-                    "additional_categories": ["Travel"],
+                    "additional_categories": ["Travel", "Travel"],
                     "confidence": 0.94,
                 },
                 {
@@ -45,6 +46,10 @@ def test_classifies_each_transaction_with_summary_topic_and_confidence(monkeypat
     assert result["one"].additional_categories == ("Travel",)
     assert result["two"].confidence == 0.83
     assert call["live_search"] is True
+    additional_categories_schema = call["schema"]["properties"]["classifications"]["items"][
+        "properties"
+    ]["additional_categories"]
+    assert "uniqueItems" not in additional_categories_schema
     assert "Spanish or Catalan context" in call["prompt"]
     assert "positive amounts are refunds or repayments" in call["prompt"]
     assert "exclusive accounting allocation" in call["prompt"]

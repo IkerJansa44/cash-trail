@@ -67,6 +67,10 @@ class TransactionTopicsUpdate(BaseModel):
     additional_category_ids: list[int] = Field(default_factory=list)
 
 
+class TransactionExclusionUpdate(BaseModel):
+    excluded: bool
+
+
 class TopicCreate(BaseModel):
     name: str = Field(min_length=1, max_length=40)
     parent_id: int | None = None
@@ -463,11 +467,11 @@ def dashboard(
             roots[item.category_id].name if item.category_id else "Pending review"
         ] += -item.amount
     monthly: dict[str, dict[str, Decimal]] = defaultdict(lambda: defaultdict(Decimal))
-    for item in transactions:
+    for item in selected if custom_range else transactions:
         key = item.operation_date.strftime("%Y-%m")
         category = roots[item.category_id].name if item.category_id else "Pending review"
         monthly[key][category] += -item.amount
-    pending = (
+    pending_total = (
         db.scalar(
             select(func.count()).select_from(Transaction).where(Transaction.status == "pending")
         )
@@ -487,14 +491,17 @@ def dashboard(
         "count": len(selected),
         "expense_count": sum(item.amount < 0 for item in selected),
         "credit_count": sum(item.amount > 0 for item in selected),
-        "pending": pending,
+        "pending": sum(item.status == "pending" for item in selected),
+        "pending_total": pending_total,
         "categories": [
             {"name": name, "value": float(value), "color": _category_color(name, categories_by_id)}
             for name, value in sorted(by_category.items(), key=lambda pair: pair[1], reverse=True)
         ],
         "monthly": [
             {"month": key, **{name: float(value) for name, value in values.items()}}
-            for key, values in sorted(monthly.items())[-12:]
+            for key, values in (
+                sorted(monthly.items()) if custom_range else sorted(monthly.items())[-12:]
+            )
         ],
         "recent": [_serialize_transaction(item, categories_by_id) for item in selected[:8]],
         "transactions": [_serialize_transaction(item, categories_by_id) for item in selected],
@@ -1079,6 +1086,36 @@ def update_transaction_topics(
     )
     db.commit()
     db.refresh(transaction)
+    return _serialize_transaction(transaction, categories)
+
+
+@app.patch("/api/transactions/{transaction_id}/exclusion")
+def update_transaction_exclusion(
+    transaction_id: int, request: TransactionExclusionUpdate, db: DatabaseSession
+) -> dict[str, object]:
+    transaction = db.get(Transaction, transaction_id)
+    if not transaction:
+        raise HTTPException(404, "Transaction not found")
+    if not request.excluded and transaction.exclusion_reason != "manual":
+        raise HTTPException(400, "Only manually excluded transactions can be restored")
+
+    if request.excluded:
+        transaction.status = "excluded"
+        transaction.classification_source = "manual_exclusion"
+        transaction.exclusion_reason = "manual"
+    else:
+        transaction.status = "confirmed" if transaction.category_id else "pending"
+        transaction.classification_source = (
+            "edited"
+            if transaction.category_id
+            else "codex"
+            if transaction.proposed_category_id
+            else "unclassified"
+        )
+        transaction.exclusion_reason = None
+    db.commit()
+    db.refresh(transaction)
+    categories = {item.id: item for item in db.scalars(select(Category))}
     return _serialize_transaction(transaction, categories)
 
 

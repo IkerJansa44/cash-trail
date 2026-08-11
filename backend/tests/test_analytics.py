@@ -12,6 +12,7 @@ from app.main import (
     TopicCreate,
     TopicMerge,
     TopicUpdate,
+    TransactionExclusionUpdate,
     TransactionTopicsUpdate,
     _exclusion_reason,
     apply_topic_proposal,
@@ -24,6 +25,7 @@ from app.main import (
     topic_tree,
     transactions,
     update_topic,
+    update_transaction_exclusion,
     update_transaction_topics,
 )
 from app.models import (
@@ -147,6 +149,7 @@ def test_calculates_spending_for_inclusive_custom_range() -> None:
     assert result["count"] == 1
     assert result["is_custom"] is True
     assert len(result["transactions"]) == 1
+    assert result["monthly"] == [{"month": "2026-08", "Dining": 25.0}]
 
 
 def test_refund_can_create_a_negative_net_topic_total() -> None:
@@ -463,3 +466,42 @@ def test_edits_primary_and_context_topics_from_transactions() -> None:
     assert transaction.ai_description == "Coffee during a day trip."
     assert db.query(MerchantRule).one().category_id == dining.id
     assert db.query(MerchantTagRule).one().category_id == travel.id
+
+
+def test_manually_excludes_and_restores_a_transaction() -> None:
+    db = session()
+    dining = Category(name="Dining", color="#E97852")
+    batch = ImportBatch(filename="statement.xls", imported_count=1, duplicate_count=0)
+    db.add_all([dining, batch])
+    db.flush()
+    transaction = Transaction(
+        operation_date=date(2026, 8, 11),
+        description="TARGETA CAFE",
+        merchant="CAFE",
+        amount=Decimal("-8.50"),
+        currency="EUR",
+        fingerprint="manual-exclusion",
+        status="confirmed",
+        classification_source="edited",
+        category_id=dining.id,
+        import_batch_id=batch.id,
+    )
+    db.add(transaction)
+    db.commit()
+
+    excluded = update_transaction_exclusion(
+        transaction.id, TransactionExclusionUpdate(excluded=True), db
+    )
+
+    assert excluded["status"] == "excluded"
+    assert excluded["exclusion_reason"] == "manual"
+    assert dashboard(db, year=2026, month=8)["total"] == 0
+    assert transactions(db)[0]["status"] == "excluded"
+
+    restored = update_transaction_exclusion(
+        transaction.id, TransactionExclusionUpdate(excluded=False), db
+    )
+
+    assert restored["status"] == "confirmed"
+    assert restored["exclusion_reason"] is None
+    assert dashboard(db, year=2026, month=8)["total"] == 8.5

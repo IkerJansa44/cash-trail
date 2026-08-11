@@ -2,6 +2,7 @@ import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "
 import {
   ArrowDownRight,
   ArrowUpRight,
+  Ban,
   CalendarRange,
   ChartNoAxesCombined,
   Check,
@@ -11,6 +12,7 @@ import {
   LoaderCircle,
   Plus,
   ReceiptText,
+  RotateCcw,
   Search,
   Sparkles,
   Tags,
@@ -42,6 +44,7 @@ const compactEuro = new Intl.NumberFormat("en-IE", { style: "currency", currency
 const monthLabel = (value: string) => new Intl.DateTimeFormat("en", { month: "long", year: "numeric" }).format(new Date(`${value}-01T00:00:00`));
 const shortMonth = (value: string) => new Intl.DateTimeFormat("en", { month: "short" }).format(new Date(`${value}-01T00:00:00`));
 const shortDate = (value: string) => new Intl.DateTimeFormat("en", { day: "numeric", month: "short", year: "numeric" }).format(new Date(`${value}T00:00:00`));
+const rangeLabel = (start: string, end: string) => start === end ? shortDate(start) : `${shortDate(start)} – ${shortDate(end)}`;
 const signedEuro = (amount: number) => `${amount >= 0 ? "+" : "−"}${euro.format(Math.abs(amount))}`;
 const dayMilliseconds = 86_400_000;
 const dateValue = (value: string) => Date.parse(`${value}T00:00:00Z`);
@@ -93,6 +96,7 @@ export default function App() {
         apiRequest<CoverageData>("/api/coverage"),
       ]);
       setDashboard(dashboardData);
+      setMonthDetail(null);
       setPeriod(dashboardData.period);
       setCategories(categoryData);
       setCoverage(coverageData);
@@ -149,9 +153,24 @@ export default function App() {
     }
   };
 
+  const excludeReviewTransaction = async (item: Transaction) => {
+    await apiRequest<Transaction>(`/api/transactions/${item.id}/exclusion`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ excluded: true }),
+    });
+    setReview((current) => current.filter((candidate) => candidate.id !== item.id));
+    setDashboard((current) => current ? { ...current, pending: Math.max(0, current.pending - 1), pending_total: Math.max(0, current.pending_total - 1) } : current);
+    setNotice(`${item.merchant} excluded from spending analytics`);
+  };
+
   const applyRange = () => {
     if (!rangeStart || !rangeEnd) {
       setNotice("Choose both a start and an end date");
+      return;
+    }
+    if (rangeStart > rangeEnd) {
+      setNotice("The start date must be before the end date");
       return;
     }
     void load(period, rangeStart, rangeEnd);
@@ -166,7 +185,13 @@ export default function App() {
   const loadMonthDetail = async (month: string) => {
     setMonthBusy(true);
     try {
-      setMonthDetail(await apiRequest<DashboardData>(`/api/dashboard?year=${month.slice(0, 4)}&month=${Number(month.slice(5))}`));
+      const params = new URLSearchParams({ year: month.slice(0, 4), month: String(Number(month.slice(5))) });
+      if (dashboard?.is_custom) {
+        const monthEnd = new Date(Date.UTC(Number(month.slice(0, 4)), Number(month.slice(5)), 0)).toISOString().slice(0, 10);
+        params.set("start_date", dashboard.range_start > `${month}-01` ? dashboard.range_start : `${month}-01`);
+        params.set("end_date", dashboard.range_end < monthEnd ? dashboard.range_end : monthEnd);
+      }
+      setMonthDetail(await apiRequest<DashboardData>(`/api/dashboard?${params}`));
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Unable to load month details");
     } finally {
@@ -182,7 +207,7 @@ export default function App() {
           <NavItem active={view === "dashboard"} icon={<LayoutDashboard />} label="Overview" onClick={() => navigate("dashboard")} />
           <NavItem active={view === "transactions"} icon={<ReceiptText />} label="Transactions" onClick={() => navigate("transactions")} />
           <NavItem active={view === "topics"} icon={<Tags />} label="Topics" onClick={() => navigate("topics")} />
-          <NavItem active={view === "review"} icon={<CircleHelp />} label="Review" badge={dashboard?.pending} onClick={() => navigate("review")} />
+          <NavItem active={view === "review"} icon={<CircleHelp />} label="Review" badge={dashboard?.pending_total} onClick={() => navigate("review")} />
         </nav>
         <div className="privacy-note"><WalletCards /><div><strong>Local by design</strong><span>Your financial data stays on this computer.</span></div></div>
       </aside>
@@ -198,7 +223,7 @@ export default function App() {
 
         {notice && <div className="notice" onClick={() => setNotice("")}>{notice}<span>×</span></div>}
         {view === "dashboard" && dashboard?.available_periods.length ? <div className="range-bar"><div><CalendarRange /><strong>Custom spending range</strong></div><input aria-label="Range start" type="date" value={rangeStart} onChange={(event) => setRangeStart(event.target.value)} /><span>to</span><input aria-label="Range end" type="date" value={rangeEnd} onChange={(event) => setRangeEnd(event.target.value)} /><button onClick={applyRange} disabled={busy}>View range</button>{dashboard.is_custom && <button className="clear-range" onClick={clearRange}>Clear</button>}</div> : null}
-        {busy && !dashboard ? <EmptyState loading /> : view === "dashboard" ? <Dashboard data={dashboard} coverage={coverage} monthDetail={monthDetail} monthBusy={monthBusy} onMonthSelect={loadMonthDetail} onCloseMonth={() => setMonthDetail(null)} /> : view === "transactions" ? <TransactionList initialItems={transactions} categories={categories} /> : view === "topics" ? <TopicsPage /> : <ReviewQueue items={review} categories={categories} onApprove={approveTransactions} onClassify={classifyPending} onTopicsChanged={async () => setCategories(await apiRequest<Category[]>("/api/categories"))} busy={busy} />}
+        {busy && !dashboard ? <EmptyState loading /> : view === "dashboard" ? <Dashboard data={dashboard} coverage={coverage} monthDetail={monthDetail} monthBusy={monthBusy} onMonthSelect={loadMonthDetail} onCloseMonth={() => setMonthDetail(null)} /> : view === "transactions" ? <TransactionList initialItems={transactions} categories={categories} /> : view === "topics" ? <TopicsPage /> : <ReviewQueue items={review} categories={categories} onApprove={approveTransactions} onExclude={excludeReviewTransaction} onClassify={classifyPending} onTopicsChanged={async () => setCategories(await apiRequest<Category[]>("/api/categories"))} busy={busy} />}
       </main>
     </div>
   );
@@ -221,6 +246,7 @@ function Dashboard({ data, coverage, monthDetail, monthBusy, onMonthSelect, onCl
   const colors = Object.fromEntries((data?.categories ?? []).map((item) => [item.name, item.color]));
   if (!data || !data.available_periods.length) return <EmptyState />;
   const positiveCategories = data.categories.filter((item) => item.value > 0);
+  const activeRange = rangeLabel(data.range_start, data.range_end);
   return (
     <div className="dashboard">
       <section className="kpi-grid">
@@ -230,10 +256,10 @@ function Dashboard({ data, coverage, monthDetail, monthBusy, onMonthSelect, onCl
         <Kpi label="Needs review" value={String(data.pending)} detail={data.pending ? "Help improve future imports" : "Everything is categorized"} icon={data.pending ? <CircleHelp /> : <Check />} tone={data.pending ? "warning" : "good"} />
       </section>
 
-      <CoverageTimeline coverage={coverage} />
+      <CoverageTimeline coverage={coverage} rangeStart={data.is_custom ? data.range_start : undefined} rangeEnd={data.is_custom ? data.range_end : undefined} />
 
       <section className="panel chart-panel">
-        <div className="panel-heading"><div><p className="eyebrow">SPENDING HISTORY</p><h2>Net monthly spend by category</h2></div><span>{monthBusy ? "Loading month…" : "Click a month for details"}</span></div>
+        <div className="panel-heading"><div><p className="eyebrow">SPENDING HISTORY</p><PanelTitle title="Net monthly spend by category" range={activeRange} /></div><span>{monthBusy ? "Loading month…" : "Click a month for details"}</span></div>
         <div className="bar-chart">
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={data.monthly} margin={{ top: 20, right: 8, left: -12, bottom: 0 }} barSize={34} onClick={(event) => { if (event?.activeLabel) void onMonthSelect(String(event.activeLabel)); }}>
@@ -260,13 +286,13 @@ function Dashboard({ data, coverage, monthDetail, monthBusy, onMonthSelect, onCl
 
       <div className="lower-grid">
         <section className="panel category-panel">
-          <div className="panel-heading"><div><p className="eyebrow">BREAKDOWN</p><h2>Net by category</h2></div></div>
+          <div className="panel-heading"><div><p className="eyebrow">BREAKDOWN</p><PanelTitle title="Net by category" range={activeRange} /></div></div>
           <div className="category-content">
             <div className="donut"><ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={positiveCategories} dataKey="value" innerRadius={60} outerRadius={82} paddingAngle={2}>{positiveCategories.map((item) => <Cell key={item.name} fill={item.color} />)}</Pie><Tooltip formatter={(value) => euro.format(Number(value))} /></PieChart></ResponsiveContainer><div><strong>{euro.format(data.total)}</strong><span>Net total</span></div></div>
             <div className="category-list">{data.categories.map((item) => <div key={item.name}><span><i style={{ background: item.color }} />{item.name}</span><strong className={item.value < 0 ? "net-credit" : ""}>{euro.format(item.value)}</strong></div>)}</div>
           </div>
         </section>
-        <section className="panel recent-panel"><div className="panel-heading"><div><p className="eyebrow">ACTIVITY</p><h2>Recent transactions</h2></div></div><TransactionRows items={data.recent} /></section>
+        <section className="panel recent-panel"><div className="panel-heading"><div><p className="eyebrow">ACTIVITY</p><PanelTitle title="Recent transactions" range={activeRange} /></div></div><TransactionRows items={data.recent} /></section>
       </div>
     </div>
   );
@@ -274,47 +300,48 @@ function Dashboard({ data, coverage, monthDetail, monthBusy, onMonthSelect, onCl
 
 type CoverageSegment = { start: string; end: string; imported: boolean; days: number };
 
-function coverageSegments(coverage: CoverageData, timelineEnd: string): CoverageSegment[] {
-  if (!coverage.start || !coverage.end || coverage.start > timelineEnd) return [];
-  const importedEnd = coverage.end < timelineEnd ? coverage.end : timelineEnd;
-  const gaps = coverage.gaps
-    .filter((gap) => gap.start <= timelineEnd)
-    .map((gap) => ({ start: gap.start, end: gap.end < timelineEnd ? gap.end : timelineEnd }));
-  const segments: CoverageSegment[] = [];
-  let cursor = coverage.start;
-
-  for (const gap of gaps) {
-    if (cursor < gap.start) {
-      const end = addDays(gap.start, -1);
-      segments.push({ start: cursor, end, imported: true, days: inclusiveDays(cursor, end) });
-    }
-    const start = cursor > gap.start ? cursor : gap.start;
-    if (start <= gap.end) segments.push({ start, end: gap.end, imported: false, days: inclusiveDays(start, gap.end) });
-    cursor = addDays(gap.end, 1);
+function coverageSegments(coverage: CoverageData, timelineStart: string, timelineEnd: string): CoverageSegment[] {
+  if (!coverage.start || !coverage.end || timelineStart > timelineEnd) return [];
+  const importedRanges: { start: string; end: string }[] = [];
+  let importedStart = coverage.start;
+  for (const gap of coverage.gaps) {
+    importedRanges.push({ start: importedStart, end: addDays(gap.start, -1) });
+    importedStart = addDays(gap.end, 1);
   }
-
-  if (cursor <= importedEnd) {
-    segments.push({ start: cursor, end: importedEnd, imported: true, days: inclusiveDays(cursor, importedEnd) });
-    cursor = addDays(importedEnd, 1);
+  importedRanges.push({ start: importedStart, end: coverage.end });
+  const segments: CoverageSegment[] = [];
+  let cursor = timelineStart;
+  for (const range of importedRanges) {
+    const start = range.start < timelineStart ? timelineStart : range.start;
+    const end = range.end > timelineEnd ? timelineEnd : range.end;
+    if (start > end) continue;
+    if (cursor < start) {
+      const gapEnd = addDays(start, -1);
+      segments.push({ start: cursor, end: gapEnd, imported: false, days: inclusiveDays(cursor, gapEnd) });
+    }
+    segments.push({ start, end, imported: true, days: inclusiveDays(start, end) });
+    cursor = addDays(end, 1);
   }
   if (cursor <= timelineEnd) segments.push({ start: cursor, end: timelineEnd, imported: false, days: inclusiveDays(cursor, timelineEnd) });
   return segments;
 }
 
-function CoverageTimeline({ coverage }: { coverage: CoverageData | null }) {
-  const timelineEnd = today();
+function CoverageTimeline({ coverage, rangeStart, rangeEnd }: { coverage: CoverageData | null; rangeStart?: string; rangeEnd?: string }) {
+  const timelineStart = rangeStart ?? coverage?.start;
+  const timelineEnd = rangeEnd ?? today();
   if (!coverage?.start) return null;
-  const segments = coverageSegments(coverage, timelineEnd);
+  if (!timelineStart) return null;
+  const segments = coverageSegments(coverage, timelineStart, timelineEnd);
   if (!segments.length) return null;
   const gapCount = segments.filter((segment) => !segment.imported).length;
   const description = segments.map((segment) => `${segment.imported ? "Imported" : "Not imported"} ${shortDate(segment.start)} to ${shortDate(segment.end)}`).join("; ");
 
   return <section className="panel coverage-timeline">
     <div className="panel-heading">
-      <div><p className="eyebrow">STATEMENT HISTORY</p><h2>Imported transaction coverage</h2></div>
+      <div><p className="eyebrow">STATEMENT HISTORY</p><PanelTitle title="Imported transaction coverage" range={rangeLabel(timelineStart, timelineEnd)} /></div>
       <span>{gapCount ? `${gapCount} ${gapCount === 1 ? "gap" : "gaps"}` : "Complete coverage"}</span>
     </div>
-    <p className="coverage-subtitle">From the earliest imported statement through today</p>
+    <p className="coverage-subtitle">{rangeStart ? "Coverage within the selected spending range" : "From the earliest imported statement through today"}</p>
     <div className="coverage-track" role="img" aria-label={description}>
       {segments.map((segment) => <span
         key={`${segment.start}-${segment.imported}`}
@@ -323,15 +350,19 @@ function CoverageTimeline({ coverage }: { coverage: CoverageData | null }) {
         title={`${segment.imported ? "Imported" : "Not imported"} · ${shortDate(segment.start)} – ${shortDate(segment.end)}`}
       />)}
     </div>
-    <div className="coverage-axis"><span>{shortDate(coverage.start)}</span><span>Today · {shortDate(timelineEnd)}</span></div>
+    <div className="coverage-axis"><span>{shortDate(timelineStart)}</span><span>{rangeEnd ? shortDate(timelineEnd) : `Today · ${shortDate(timelineEnd)}`}</span></div>
     <div className="coverage-legend"><span><i className="imported" />Imported</span><span><i className="gap" />Not imported</span></div>
   </section>;
+}
+
+function PanelTitle({ title, range }: { title: string; range: string }) {
+  return <h2>{title}<small>{range}</small></h2>;
 }
 
 function MonthDetail({ data, onClose }: { data: DashboardData; onClose: () => void }) {
   const categoryScale = Math.max(1, ...data.categories.map((category) => Math.abs(category.value)));
   return <section className="panel month-detail">
-    <div className="month-detail-heading"><div><p className="eyebrow">MONTH DETAIL</p><h2>{monthLabel(data.period)}</h2></div><button aria-label="Close month details" onClick={onClose}>×</button></div>
+    <div className="month-detail-heading"><div><p className="eyebrow">MONTH DETAIL</p><h2>{data.is_custom ? rangeLabel(data.range_start, data.range_end) : monthLabel(data.period)}</h2></div><button aria-label="Close month details" onClick={onClose}>×</button></div>
     <div className="month-detail-stats"><div><span>Net spent</span><strong>{euro.format(data.total)}</strong></div><div><span>Activity</span><strong>{data.expense_count} expenses · {data.credit_count} credits</strong></div><div><span>Average net</span><strong>{euro.format(data.average)}</strong></div><div><span>Vs previous month</span><strong>{data.change === null ? "—" : `${data.change > 0 ? "+" : ""}${data.change.toFixed(1)}%`}</strong></div></div>
     <div className="month-detail-content"><div><h3>Net category breakdown</h3><div className="month-categories">{data.categories.map((category) => <div key={category.name}><span><i style={{ background: category.color }} />{category.name}</span><div><b style={{ width: `${Math.abs(category.value) / categoryScale * 100}%`, background: category.color }} /><strong className={category.value < 0 ? "net-credit" : ""}>{euro.format(category.value)}</strong></div></div>)}</div></div><div><h3>Transactions</h3><div className="month-transactions"><TransactionRows items={data.transactions} showStatus /></div></div></div>
   </section>;
@@ -349,8 +380,11 @@ function TransactionList({ initialItems, categories }: { initialItems: Transacti
   const [endDate, setEndDate] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [filtersApplied, setFiltersApplied] = useState(false);
   const [topicEdit, setTopicEdit] = useState<{ transactionId: number; description: string; categoryId: number | null; additionalCategoryIds: number[] } | null>(null);
   const [topicSaving, setTopicSaving] = useState(false);
+  const [exclusionBusy, setExclusionBusy] = useState<number | null>(null);
+  const [excludeCandidate, setExcludeCandidate] = useState<Transaction | null>(null);
   const topicRows = useMemo(() => taxonomyRows(categories), [categories]);
 
   useEffect(() => setItems(initialItems), [initialItems]);
@@ -371,6 +405,7 @@ function TransactionList({ initialItems, categories }: { initialItems: Transacti
     setError("");
     try {
       setItems(await apiRequest<Transaction[]>(`/api/transactions?${params}`));
+      setFiltersApplied(Boolean(params.size));
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Unable to filter transactions");
     } finally {
@@ -396,7 +431,10 @@ function TransactionList({ initialItems, categories }: { initialItems: Transacti
     setError("");
     setLoading(true);
     void apiRequest<Transaction[]>("/api/transactions")
-      .then(setItems)
+      .then((nextItems) => {
+        setItems(nextItems);
+        setFiltersApplied(false);
+      })
       .catch((requestError) => setError(requestError instanceof Error ? requestError.message : "Unable to load transactions"))
       .finally(() => setLoading(false));
   };
@@ -433,7 +471,29 @@ function TransactionList({ initialItems, categories }: { initialItems: Transacti
     }
   };
 
+  const setExcluded = async (item: Transaction, excluded: boolean) => {
+    setExclusionBusy(item.id);
+    setError("");
+    try {
+      const updated = await apiRequest<Transaction>(`/api/transactions/${item.id}/exclusion`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ excluded }),
+      });
+      setItems((current) => current.map((candidate) => candidate.id === updated.id ? updated : candidate));
+      if (excluded) {
+        if (topicEdit?.transactionId === item.id) setTopicEdit(null);
+        setExcludeCandidate(null);
+      }
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Unable to update transaction exclusion");
+    } finally {
+      setExclusionBusy(null);
+    }
+  };
+
   const hasFilters = Boolean(name || topicId || startDate || endDate);
+  const filteredTotal = items.reduce((total, item) => total + Math.round(item.amount * 100), 0) / 100;
   return <div className="transactions-page">
     <section className="panel transaction-filters">
       <div className="filter-heading"><div><ListFilter /><div><strong>Filter transactions</strong><span>Combine any of the filters below</span></div></div><button type="button" className="date-shortcut" onClick={applyLastThreeMonths}>Last 3 months</button></div>
@@ -446,7 +506,8 @@ function TransactionList({ initialItems, categories }: { initialItems: Transacti
       </div>
       {error && <div className="filter-error">{error}</div>}
     </section>
-    <section className="panel full-list"><div className="table-title"><div><ReceiptText /><span>{loading ? "Finding transactions…" : `${items.length} ${items.length === 1 ? "transaction" : "transactions"}`}</span></div>{hasFilters && !loading && <span>Filtered results</span>}</div>{!loading && (items.length ? <div className="transaction-list">{items.map((item) => <div className="transaction-edit-entry" key={item.id}><TransactionRow item={item} showStatus action={item.status === "excluded" ? <span /> : <button className="edit-transaction-topics" aria-label={`Edit transaction details for ${item.merchant}`} title="Edit transaction details" onClick={() => editTopics(item)}><Tags /></button>} />{topicEdit?.transactionId === item.id && <div className="transaction-topic-editor"><label className="transaction-description-editor"><span>Description</span><textarea aria-label={`Edited description for ${item.merchant}`} maxLength={160} placeholder="Add a short description" value={topicEdit.description} onChange={(event) => setTopicEdit({ ...topicEdit, description: event.target.value })} /></label><TopicAssignmentPicker categories={categories} primaryId={topicEdit.categoryId} contextIds={topicEdit.additionalCategoryIds} label={item.merchant} onPrimary={(categoryId) => setTopicEdit({ ...topicEdit, categoryId, additionalCategoryIds: topicEdit.additionalCategoryIds.filter((id) => id !== categoryId) })} onContext={toggleEditTopic} /><div className="transaction-topic-actions"><button className="cancel-topic-edit" disabled={topicSaving} onClick={() => setTopicEdit(null)}>Cancel</button><button disabled={topicSaving || !topicEdit.description.trim() || !topicEdit.categoryId} onClick={() => void saveTopics()}>{topicSaving ? <LoaderCircle className="spinner" /> : <Check />}Save changes</button></div></div>}</div>)}</div> : <div className="no-filter-results"><Search /><strong>No matching transactions</strong><span>Try clearing or broadening a filter.</span></div>)}</section>
+    <section className="panel full-list"><div className="table-title"><div><ReceiptText /><span>{loading ? "Finding transactions…" : `${items.length} ${items.length === 1 ? "transaction" : "transactions"}`}</span></div>{filtersApplied && !loading && <div className="filtered-total"><span>Filtered total</span><strong className={filteredTotal >= 0 ? "income" : ""}>{signedEuro(filteredTotal)}</strong></div>}</div>{!loading && (items.length ? <div className="transaction-list">{items.map((item) => <div className="transaction-edit-entry" key={item.id}><TransactionRow item={item} showStatus action={<div className="transaction-actions">{item.status !== "excluded" && <button className="edit-transaction-topics" aria-label={`Edit transaction details for ${item.merchant}`} title="Edit transaction details" onClick={() => editTopics(item)}><Tags /></button>}{item.status !== "excluded" && <button className="exclude-transaction" aria-label={`Exclude ${item.merchant}`} data-tooltip="Exclude" disabled={exclusionBusy === item.id} onClick={() => setExcludeCandidate(item)}>{exclusionBusy === item.id ? <LoaderCircle className="spinner" /> : <Ban />}</button>}{item.status === "excluded" && item.exclusion_reason === "manual" && <button className="restore-transaction" aria-label={`Restore ${item.merchant}`} title="Restore to analytics" disabled={exclusionBusy === item.id} onClick={() => void setExcluded(item, false)}>{exclusionBusy === item.id ? <LoaderCircle className="spinner" /> : <RotateCcw />}</button>}</div>} />{topicEdit?.transactionId === item.id && <div className="transaction-topic-editor"><label className="transaction-description-editor"><span>Description</span><textarea aria-label={`Edited description for ${item.merchant}`} maxLength={160} placeholder="Add a short description" value={topicEdit.description} onChange={(event) => setTopicEdit({ ...topicEdit, description: event.target.value })} /></label><TopicAssignmentPicker categories={categories} primaryId={topicEdit.categoryId} contextIds={topicEdit.additionalCategoryIds} label={item.merchant} onPrimary={(categoryId) => setTopicEdit({ ...topicEdit, categoryId, additionalCategoryIds: topicEdit.additionalCategoryIds.filter((id) => id !== categoryId) })} onContext={toggleEditTopic} /><div className="transaction-topic-actions"><button className="cancel-topic-edit" disabled={topicSaving} onClick={() => setTopicEdit(null)}>Cancel</button><button disabled={topicSaving || !topicEdit.description.trim() || !topicEdit.categoryId} onClick={() => void saveTopics()}>{topicSaving ? <LoaderCircle className="spinner" /> : <Check />}Save changes</button></div></div>}</div>)}</div> : <div className="no-filter-results"><Search /><strong>No matching transactions</strong><span>Try clearing or broadening a filter.</span></div>)}</section>
+    {excludeCandidate && <ExclusionDialog item={excludeCandidate} busy={exclusionBusy === excludeCandidate.id} onCancel={() => setExcludeCandidate(null)} onConfirm={() => void setExcluded(excludeCandidate, true)} />}
   </div>;
 }
 
@@ -468,7 +529,7 @@ type ReviewDraft = { description: string; categoryId: number | null; additionalC
 type Approval = { transaction_id: number; description: string; category_id: number; additional_category_ids: number[] };
 const blankDraft = (): ReviewDraft => ({ description: "", categoryId: null, additionalCategoryIds: [] });
 
-function ReviewQueue({ items, categories, onApprove, onClassify, onTopicsChanged, busy }: { items: Transaction[]; categories: Category[]; onApprove: (items: Approval[]) => Promise<void>; onClassify: () => Promise<void>; onTopicsChanged: () => Promise<void>; busy: boolean }) {
+function ReviewQueue({ items, categories, onApprove, onExclude, onClassify, onTopicsChanged, busy }: { items: Transaction[]; categories: Category[]; onApprove: (items: Approval[]) => Promise<void>; onExclude: (item: Transaction) => Promise<void>; onClassify: () => Promise<void>; onTopicsChanged: () => Promise<void>; busy: boolean }) {
   const [drafts, setDrafts] = useState<Record<number, ReviewDraft>>({});
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [sort, setSort] = useState("confidence-asc");
@@ -480,6 +541,8 @@ function ReviewQueue({ items, categories, onApprove, onClassify, onTopicsChanged
   const [topicErrors, setTopicErrors] = useState<Record<number, string>>({});
   const [topicCreatorVersions, setTopicCreatorVersions] = useState<Record<number, number>>({});
   const [reviewError, setReviewError] = useState("");
+  const [excludeBusy, setExcludeBusy] = useState<number | null>(null);
+  const [excludeCandidate, setExcludeCandidate] = useState<Transaction | null>(null);
   const topicRows = useMemo(() => taxonomyRows(categories), [categories]);
 
   useEffect(() => {
@@ -523,6 +586,20 @@ function ReviewQueue({ items, categories, onApprove, onClassify, onTopicsChanged
     await onClassify();
     setDrafts({});
     setSelected(new Set());
+  };
+
+  const exclude = async (item: Transaction) => {
+    setExcludeBusy(item.id);
+    setReviewError("");
+    try {
+      await onExclude(item);
+      setExcludeCandidate(null);
+      setSelected((current) => { const next = new Set(current); next.delete(item.id); return next; });
+    } catch (error) {
+      setReviewError(error instanceof Error ? error.message : "Unable to exclude transaction");
+    } finally {
+      setExcludeBusy(null);
+    }
   };
 
   const createCustom = async (transactionId: number) => {
@@ -626,17 +703,22 @@ function ReviewQueue({ items, categories, onApprove, onClassify, onTopicsChanged
     </div>
     <div className="review-batch-bar"><label><input type="checkbox" checked={selected.size === items.length} onChange={(event) => setSelected(event.target.checked ? new Set(items.map((item) => item.id)) : new Set())} />Select all</label><span>{items.filter(ready).length} ready</span><button onClick={() => void approve(items.filter(ready))} disabled={busy || !items.some(ready)}>Approve all ready</button></div>
     <div className="review-table">
-      <div className="review-table-head"><span /><span>Transaction</span><span>Codex description</span><span>Primary & context topics</span><span>Confidence</span><span /></div>
+      <div className="review-table-head"><span /><span>Transaction</span><span>Codex description</span><span>Primary & context topics</span><span>Confidence</span><span>Actions</span></div>
       {sortedItems.map((item) => <div className={`review-row ${selected.has(item.id) ? "selected" : ""}`} key={item.id}>
         <input aria-label={`Select ${item.merchant}`} type="checkbox" checked={selected.has(item.id)} onChange={(event) => setSelected((current) => { const next = new Set(current); event.target.checked ? next.add(item.id) : next.delete(item.id); return next; })} />
         <div className="review-transaction"><div><span className="merchant-icon">{item.merchant.charAt(0)}</span><div><strong>{item.merchant}</strong><small className={item.amount >= 0 ? "credit" : ""}>{shortDate(item.date)} · {signedEuro(item.amount)}</small></div></div><p title={item.description}>{item.description}</p></div>
         <textarea aria-label={`Description for ${item.merchant}`} rows={2} maxLength={160} placeholder="Ask Codex or write a short description" value={drafts[item.id]?.description ?? ""} onChange={(event) => setDrafts((current) => ({ ...current, [item.id]: { ...(current[item.id] ?? blankDraft()), description: event.target.value } }))} />
         <div className="review-topic-field"><TopicAssignmentPicker categories={categories} primaryId={drafts[item.id]?.categoryId ?? null} contextIds={drafts[item.id]?.additionalCategoryIds ?? []} label={item.merchant} onPrimary={(categoryId) => setPrimaryTopic(item.id, categoryId)} onContext={(categoryId) => toggleAdditionalTopic(item.id, categoryId)} /><details key={`${item.id}-${topicCreatorVersions[item.id] ?? 0}`}><summary>Add a new topic</summary><div className="topic-creation-options"><div className="topic-creation-option"><span>Add directly</span><input aria-label={`New topic name for ${item.merchant}`} placeholder="Specific topic name" value={customNames[item.id] ?? ""} onChange={(event) => setCustomNames({ ...customNames, [item.id]: event.target.value })} /><select aria-label={`Parent for new topic on ${item.merchant}`} value={customParents[item.id] ?? ""} onChange={(event) => setCustomParents({ ...customParents, [item.id]: event.target.value })}><option value="">Root topic</option>{topicRows.map(({ topic, depth }) => <option key={topic.id} value={topic.id}>{topicLabel(topic.name, depth)}</option>)}</select><button disabled={topicBusy !== null || !customNames[item.id]?.trim()} onClick={() => void createCustom(item.id)}><Plus />Add topic</button></div><div className="topic-creation-option codex-topic-option"><span>Plan with Codex</span><textarea aria-label={`Taxonomy request for ${item.merchant}`} maxLength={1000} placeholder="Explain why you need a new topic and how the current topics should be reorganized, if needed." value={codexInstructions[item.id] ?? ""} onChange={(event) => setCodexInstructions({ ...codexInstructions, [item.id]: event.target.value })} /><button disabled={topicBusy !== null || !codexInstructions[item.id]?.trim()} onClick={() => void proposeCustom(item.id)}>{topicBusy === item.id && !proposals[item.id] ? <LoaderCircle className="spinner" /> : <Sparkles />}Make proposal</button>{proposals[item.id] && <InlineTopicProposal proposal={proposals[item.id]} busy={topicBusy === item.id} onApply={() => void applyProposal(item.id)} onReject={() => void rejectProposal(item.id)} />}</div></div>{topicErrors[item.id] && <p className="inline-topic-error">{topicErrors[item.id]}</p>}</details></div>
         <span className={`confidence ${item.confidence === null ? "unknown" : item.confidence < .65 ? "low" : item.confidence < .85 ? "medium" : "high"}`}>{item.confidence === null ? "Not scored" : `${Math.round(item.confidence * 100)}%`}</span>
-        <button className="approve-row-action" aria-label={`Approve ${item.merchant}`} title="Approve transaction" disabled={busy || !ready(item)} onClick={() => void approve([item])}><Check /></button>
+        <div className="review-row-actions"><button className="exclude-row-action" aria-label={`Exclude ${item.merchant}`} data-tooltip="Exclude" disabled={busy || excludeBusy === item.id} onClick={() => setExcludeCandidate(item)}>{excludeBusy === item.id ? <LoaderCircle className="spinner" /> : <Ban />}</button><button className="approve-row-action" aria-label={`Approve ${item.merchant}`} title="Approve transaction" disabled={busy || !ready(item)} onClick={() => void approve([item])}><Check /></button></div>
       </div>)}
     </div>
+    {excludeCandidate && <ExclusionDialog item={excludeCandidate} busy={excludeBusy === excludeCandidate.id} onCancel={() => setExcludeCandidate(null)} onConfirm={() => void exclude(excludeCandidate)} />}
   </div>;
+}
+
+function ExclusionDialog({ item, busy, onCancel, onConfirm }: { item: Transaction; busy: boolean; onCancel: () => void; onConfirm: () => void }) {
+  return <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onCancel(); }}><section className="exclusion-dialog" role="dialog" aria-modal="true" aria-labelledby="exclusion-title"><div className="exclusion-dialog-icon"><Ban /></div><p className="eyebrow">EXCLUDE TRANSACTION</p><h2 id="exclusion-title">Remove from spending analytics?</h2><p><strong>{item.merchant}</strong> will no longer appear in totals, charts, or activity. You can restore it later from Transactions.</p><div className="exclusion-dialog-actions"><button onClick={onCancel} disabled={busy}>Keep transaction</button><button className="confirm-exclusion" onClick={onConfirm} disabled={busy}>{busy ? <LoaderCircle className="spinner" /> : <Ban />}Exclude</button></div></section></div>;
 }
 
 function InlineTopicProposal({ proposal, busy, onApply, onReject }: { proposal: TopicProposal; busy: boolean; onApply: () => void; onReject: () => void }) {
