@@ -55,3 +55,22 @@ def test_uses_queried_statement_range_when_present() -> None:
     assert statement.coverage_start.isoformat() == "2020-01-11"
     assert statement.coverage_end.isoformat() == "2020-01-16"
     assert statement.coverage_source == "queried_range"
+
+
+def test_preserves_repeated_identical_transactions() -> None:
+    content = """<html><table>
+    <tr><td>FECHA OPERACIÓN</td><td>CONCEPTO</td><td>FECHA VALOR</td><td>IMPORTE</td><td>SALDO</td></tr>
+    <tr><td>04/01/2020</td><td>TARGETA *0000 EXAMPLE CAFE</td><td>04/01/2020</td><td>-25,00</td><td>975,00</td></tr>
+    <tr><td>04/01/2020</td><td>ANUL.TARGETA *0000 EXAMPLE CAFE</td><td>04/01/2020</td><td>25,00</td><td>1.000,00</td></tr>
+    <tr><td>04/01/2020</td><td>TARGETA *0000 EXAMPLE CAFE</td><td>04/01/2020</td><td>-25,00</td><td>975,00</td></tr>
+    </table></html>""".encode("windows-1252")
+
+    transactions = parse_file("statement.xls", content).transactions
+
+    assert len(transactions) == 3
+    assert len({item.fingerprint for item in transactions}) == 3
+    assert [item.amount for item in transactions] == [
+        Decimal("-25.00"),
+        Decimal("25.00"),
+        Decimal("-25.00"),
+    ]

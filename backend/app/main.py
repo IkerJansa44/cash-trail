@@ -61,6 +61,12 @@ class ReviewApprovalRequest(BaseModel):
     items: list[ReviewApprovalItem] = Field(min_length=1)
 
 
+class TransactionTopicsUpdate(BaseModel):
+    description: str = Field(min_length=1, max_length=160)
+    category_id: int
+    additional_category_ids: list[int] = Field(default_factory=list)
+
+
 class TopicCreate(BaseModel):
     name: str = Field(min_length=1, max_length=40)
     parent_id: int | None = None
@@ -312,10 +318,9 @@ def statement_coverage(db: DatabaseSession) -> dict[str, object]:
 
 def _store_transactions(db: Session, batch_id: int, items: list[ImportedTransaction]) -> None:
     topics = list(db.scalars(select(Category)))
-    _, children = _topic_paths(topics)
-    categories_by_name = {item.name: item for item in topics if not children[item.id]}
+    categories_by_name = {item.name: item for item in topics}
     categories_by_id = {item.id: item for item in topics}
-    rule_hints = _merchant_rule_hints(db, categories_by_id, children)
+    rule_hints = _merchant_rule_hints(db, categories_by_id)
     classifiable = [item for item in items if not _excluded(item)]
     inferred = classify_transactions(
         [_imported_classification_payload(item) for item in classifiable],
@@ -359,16 +364,16 @@ def _store_transactions(db: Session, batch_id: int, items: list[ImportedTransact
 
 
 def _merchant_rule_hints(
-    db: Session, categories: dict[int, Category], children: dict[int, list[int]]
+    db: Session, categories: dict[int, Category]
 ) -> dict[str, dict[str, object]]:
     primary = {
         rule.merchant: categories[rule.category_id].name
         for rule in db.scalars(select(MerchantRule))
-        if rule.category_id in categories and not children[rule.category_id]
+        if rule.category_id in categories
     }
     additional: dict[str, list[str]] = defaultdict(list)
     for rule in db.scalars(select(MerchantTagRule)):
-        if rule.category_id in categories and not children[rule.category_id]:
+        if rule.category_id in categories:
             additional[rule.merchant].append(categories[rule.category_id].name)
     return {
         merchant: {
@@ -870,10 +875,9 @@ def review_queue(db: DatabaseSession) -> list[dict[str, object]]:
 def classify_review_queue(db: DatabaseSession) -> dict[str, int]:
     items = list(db.scalars(select(Transaction).where(Transaction.status == "pending")))
     topics = list(db.scalars(select(Category)))
-    _, children = _topic_paths(topics)
-    categories_by_name = {item.name: item for item in topics if not children[item.id]}
+    categories_by_name = {item.name: item for item in topics}
     categories_by_id = {item.id: item for item in topics}
-    rule_hints = _merchant_rule_hints(db, categories_by_id, children)
+    rule_hints = _merchant_rule_hints(db, categories_by_id)
     inferred = classify_transactions(
         [
             {
@@ -927,21 +931,9 @@ def approve_review_queue(request: ReviewApprovalRequest, db: DatabaseSession) ->
     }
     if len(transactions) != len(transaction_ids):
         raise HTTPException(404, "One or more pending transactions were not found")
-    topics = list(db.scalars(select(Category)))
-    _, children = _topic_paths(topics)
-    leaves = {item.id: item for item in topics if not children[item.id]}
+    topic_ids = set(db.scalars(select(Category.id)))
     for item in request.items:
-        additional = set(item.additional_category_ids)
-        if (
-            item.category_id not in leaves
-            or len(additional) != len(item.additional_category_ids)
-            or item.category_id in additional
-            or not additional.issubset(leaves)
-        ):
-            raise HTTPException(
-                400,
-                "Every transaction needs one primary leaf topic and unique additional leaf topics",
-            )
+        _validate_topic_selection(item.category_id, item.additional_category_ids, topic_ids)
     rules = {item.merchant: item for item in db.scalars(select(MerchantRule))}
     merchant_tags: dict[str, set[int]] = {}
     for approval in request.items:
@@ -977,6 +969,22 @@ def approve_review_queue(request: ReviewApprovalRequest, db: DatabaseSession) ->
         )
     db.commit()
     return {"approved": len(request.items)}
+
+
+def _validate_topic_selection(
+    category_id: int, additional_category_ids: list[int], topic_ids: set[int]
+) -> None:
+    additional = set(additional_category_ids)
+    if (
+        category_id not in topic_ids
+        or len(additional) != len(additional_category_ids)
+        or category_id in additional
+        or not additional.issubset(topic_ids)
+    ):
+        raise HTTPException(
+            400,
+            "Every transaction needs one primary topic and unique additional topics",
+        )
 
 
 @app.get("/api/transactions")
@@ -1031,6 +1039,49 @@ def transactions(
     return [_serialize_transaction(item, categories_by_id) for item in items]
 
 
+@app.patch("/api/transactions/{transaction_id}/topics")
+def update_transaction_topics(
+    transaction_id: int, request: TransactionTopicsUpdate, db: DatabaseSession
+) -> dict[str, object]:
+    transaction = db.get(Transaction, transaction_id)
+    if not transaction:
+        raise HTTPException(404, "Transaction not found")
+    if transaction.status == "excluded":
+        raise HTTPException(400, "Excluded transactions cannot be categorized")
+
+    categories = {item.id: item for item in db.scalars(select(Category))}
+    _validate_topic_selection(request.category_id, request.additional_category_ids, set(categories))
+    transaction.ai_description = request.description.strip()
+    transaction.category_id = request.category_id
+    transaction.proposed_category_id = request.category_id
+    transaction.status = "confirmed"
+    transaction.classification_source = "edited"
+    db.execute(delete(TransactionTag).where(TransactionTag.transaction_id == transaction.id))
+    db.add_all(
+        TransactionTag(transaction_id=transaction.id, category_id=category_id)
+        for category_id in request.additional_category_ids
+    )
+    db.execute(
+        delete(ProposedTransactionTag).where(
+            ProposedTransactionTag.transaction_id == transaction.id
+        )
+    )
+
+    rule = db.scalar(select(MerchantRule).where(MerchantRule.merchant == transaction.merchant))
+    if rule:
+        rule.category_id = request.category_id
+    else:
+        db.add(MerchantRule(merchant=transaction.merchant, category_id=request.category_id))
+    db.execute(delete(MerchantTagRule).where(MerchantTagRule.merchant == transaction.merchant))
+    db.add_all(
+        MerchantTagRule(merchant=transaction.merchant, category_id=category_id)
+        for category_id in request.additional_category_ids
+    )
+    db.commit()
+    db.refresh(transaction)
+    return _serialize_transaction(transaction, categories)
+
+
 def _is_topic_descendant(candidate_id: int, topic_id: int, categories: dict[int, Category]) -> bool:
     seen = {candidate_id}
     parent_id = categories[candidate_id].parent_id
@@ -1054,6 +1105,7 @@ def _serialize_transaction(item: Transaction, categories: dict[int, Category]) -
         "merchant": item.merchant,
         "amount": float(item.amount),
         "category": category.name if category else None,
+        "category_id": category.id if category else None,
         "category_color": category.color if category else "#D5D9E2",
         "proposed_category_id": proposed.id if proposed else None,
         "proposed_category": proposed.name if proposed else None,

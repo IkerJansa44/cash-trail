@@ -1,7 +1,8 @@
 import hashlib
 import io
 import re
-from dataclasses import dataclass
+from collections import defaultdict
+from dataclasses import dataclass, replace
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from html.parser import HTMLParser
@@ -86,7 +87,9 @@ def parse_file(filename: str, content: bytes) -> ParsedStatement:
     if suffix not in {".xls", ".xlsx"}:
         raise ValueError("Only .xls and .xlsx files are supported")
     rows = _parse_html(content) if _looks_like_html(content) else _parse_xlsx(content)
-    transactions = [_to_transaction(row) for row in _extract_rows(rows)]
+    transactions = _number_repeated_transactions(
+        [_to_transaction(row) for row in _extract_rows(rows)]
+    )
     if not transactions:
         raise ValueError("The statement does not contain transactions")
     queried_range = _extract_queried_range(rows)
@@ -197,6 +200,22 @@ def _to_transaction(row: dict[str, object]) -> ImportedTransaction:
         merchant=merchant,
         fingerprint=hashlib.sha256(raw_fingerprint.encode()).hexdigest(),
     )
+
+
+def _number_repeated_transactions(
+    transactions: list[ImportedTransaction],
+) -> list[ImportedTransaction]:
+    occurrences: dict[str, int] = defaultdict(int)
+    numbered = []
+    for transaction in transactions:
+        occurrences[transaction.fingerprint] += 1
+        occurrence = occurrences[transaction.fingerprint]
+        if occurrence == 1:
+            numbered.append(transaction)
+            continue
+        fingerprint = hashlib.sha256(f"{transaction.fingerprint}|{occurrence}".encode()).hexdigest()
+        numbered.append(replace(transaction, fingerprint=fingerprint))
+    return numbered
 
 
 def _parse_date(value: object) -> date:

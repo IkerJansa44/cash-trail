@@ -12,6 +12,7 @@ from app.main import (
     TopicCreate,
     TopicMerge,
     TopicUpdate,
+    TransactionTopicsUpdate,
     _exclusion_reason,
     apply_topic_proposal,
     approve_review_queue,
@@ -23,6 +24,7 @@ from app.main import (
     topic_tree,
     transactions,
     update_topic,
+    update_transaction_topics,
 )
 from app.models import (
     Category,
@@ -367,6 +369,12 @@ def test_approval_applies_edited_proposal_and_updates_dashboard() -> None:
     batch = ImportBatch(filename="statement.xls", imported_count=1, duplicate_count=0)
     db.add_all([topic, context, batch])
     db.flush()
+    db.add_all(
+        [
+            Category(name="Restaurants", color="#E97852", parent_id=topic.id),
+            Category(name="Social events", color="#7A68C7", parent_id=context.id),
+        ]
+    )
     transaction = Transaction(
         operation_date=date(2026, 8, 11),
         description="TARGETA CAFE",
@@ -413,3 +421,45 @@ def test_approval_applies_edited_proposal_and_updates_dashboard() -> None:
     approved = dashboard(db, start_date=date(2026, 8, 11), end_date=date(2026, 8, 11))
     assert approved["categories"][0]["name"] == "Dining"
     assert approved["total"] == 8.5
+
+
+def test_edits_primary_and_context_topics_from_transactions() -> None:
+    db = session()
+    dining = Category(name="Dining", color="#E97852")
+    travel = Category(name="Travel", color="#3AA6B9")
+    batch = ImportBatch(filename="statement.xls", imported_count=1, duplicate_count=0)
+    db.add_all([dining, travel, batch])
+    db.flush()
+    transaction = Transaction(
+        operation_date=date(2026, 8, 11),
+        description="TARGETA CAFE",
+        merchant="CAFE",
+        amount=Decimal("-8.50"),
+        balance=None,
+        currency="EUR",
+        fingerprint="topic-edit",
+        status="pending",
+        classification_source="codex",
+        import_batch_id=batch.id,
+    )
+    db.add(transaction)
+    db.commit()
+
+    updated = update_transaction_topics(
+        transaction.id,
+        TransactionTopicsUpdate(
+            description="Coffee during a day trip.",
+            category_id=dining.id,
+            additional_category_ids=[travel.id],
+        ),
+        db,
+    )
+
+    db.refresh(transaction)
+    assert updated["category_id"] == dining.id
+    assert updated["additional_categories"][0]["id"] == travel.id
+    assert transaction.status == "confirmed"
+    assert transaction.classification_source == "edited"
+    assert transaction.ai_description == "Coffee during a day trip."
+    assert db.query(MerchantRule).one().category_id == dining.id
+    assert db.query(MerchantTagRule).one().category_id == travel.id

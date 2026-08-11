@@ -14,7 +14,6 @@ import {
   Search,
   Sparkles,
   Tags,
-  TriangleAlert,
   Upload,
   WalletCards,
 } from "lucide-react";
@@ -36,15 +35,25 @@ import TopicsPage from "./Topics";
 import type { Category, CoverageData, DashboardData, TopicProposal, Transaction } from "./types";
 
 type View = "dashboard" | "transactions" | "review" | "topics";
+const viewPaths: Record<View, string> = { dashboard: "/overview", transactions: "/transactions", topics: "/topics", review: "/review" };
+const viewFromPath = (path: string): View => (Object.entries(viewPaths).find(([, value]) => value === path)?.[0] as View | undefined) ?? "dashboard";
 const euro = new Intl.NumberFormat("en-IE", { style: "currency", currency: "EUR" });
 const compactEuro = new Intl.NumberFormat("en-IE", { style: "currency", currency: "EUR", notation: "compact" });
 const monthLabel = (value: string) => new Intl.DateTimeFormat("en", { month: "long", year: "numeric" }).format(new Date(`${value}-01T00:00:00`));
 const shortMonth = (value: string) => new Intl.DateTimeFormat("en", { month: "short" }).format(new Date(`${value}-01T00:00:00`));
 const shortDate = (value: string) => new Intl.DateTimeFormat("en", { day: "numeric", month: "short", year: "numeric" }).format(new Date(`${value}T00:00:00`));
 const signedEuro = (amount: number) => `${amount >= 0 ? "+" : "−"}${euro.format(Math.abs(amount))}`;
+const dayMilliseconds = 86_400_000;
+const dateValue = (value: string) => Date.parse(`${value}T00:00:00Z`);
+const addDays = (value: string, days: number) => new Date(dateValue(value) + days * dayMilliseconds).toISOString().slice(0, 10);
+const inclusiveDays = (start: string, end: string) => Math.round((dateValue(end) - dateValue(start)) / dayMilliseconds) + 1;
+const today = () => {
+  const value = new Date();
+  return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}-${String(value.getDate()).padStart(2, "0")}`;
+};
 
 export default function App() {
-  const [view, setView] = useState<View>("dashboard");
+  const [view, setView] = useState<View>(() => viewFromPath(window.location.pathname));
   const [dashboard, setDashboard] = useState<DashboardData | null>(null);
   const [monthDetail, setMonthDetail] = useState<DashboardData | null>(null);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
@@ -58,6 +67,19 @@ export default function App() {
   const [monthBusy, setMonthBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const fileInput = useRef<HTMLInputElement>(null);
+
+  const navigate = (nextView: View) => {
+    if (window.location.pathname !== viewPaths[nextView]) window.history.pushState({}, "", viewPaths[nextView]);
+    setView(nextView);
+  };
+
+  useEffect(() => {
+    const initialView = viewFromPath(window.location.pathname);
+    if (window.location.pathname !== viewPaths[initialView]) window.history.replaceState({}, "", viewPaths[initialView]);
+    const syncView = () => setView(viewFromPath(window.location.pathname));
+    window.addEventListener("popstate", syncView);
+    return () => window.removeEventListener("popstate", syncView);
+  }, []);
 
   const load = useCallback(async (selectedPeriod = period, customStart = "", customEnd = "") => {
     setBusy(true);
@@ -157,10 +179,10 @@ export default function App() {
       <aside className="sidebar">
         <div className="brand"><span className="brand-mark">C</span><span>Cash Trail</span></div>
         <nav>
-          <NavItem active={view === "dashboard"} icon={<LayoutDashboard />} label="Overview" onClick={() => setView("dashboard")} />
-          <NavItem active={view === "transactions"} icon={<ReceiptText />} label="Transactions" onClick={() => setView("transactions")} />
-          <NavItem active={view === "topics"} icon={<Tags />} label="Topics" onClick={() => setView("topics")} />
-          <NavItem active={view === "review"} icon={<CircleHelp />} label="Review" badge={dashboard?.pending} onClick={() => setView("review")} />
+          <NavItem active={view === "dashboard"} icon={<LayoutDashboard />} label="Overview" onClick={() => navigate("dashboard")} />
+          <NavItem active={view === "transactions"} icon={<ReceiptText />} label="Transactions" onClick={() => navigate("transactions")} />
+          <NavItem active={view === "topics"} icon={<Tags />} label="Topics" onClick={() => navigate("topics")} />
+          <NavItem active={view === "review"} icon={<CircleHelp />} label="Review" badge={dashboard?.pending} onClick={() => navigate("review")} />
         </nav>
         <div className="privacy-note"><WalletCards /><div><strong>Local by design</strong><span>Your financial data stays on this computer.</span></div></div>
       </aside>
@@ -176,8 +198,7 @@ export default function App() {
 
         {notice && <div className="notice" onClick={() => setNotice("")}>{notice}<span>×</span></div>}
         {view === "dashboard" && dashboard?.available_periods.length ? <div className="range-bar"><div><CalendarRange /><strong>Custom spending range</strong></div><input aria-label="Range start" type="date" value={rangeStart} onChange={(event) => setRangeStart(event.target.value)} /><span>to</span><input aria-label="Range end" type="date" value={rangeEnd} onChange={(event) => setRangeEnd(event.target.value)} /><button onClick={applyRange} disabled={busy}>View range</button>{dashboard.is_custom && <button className="clear-range" onClick={clearRange}>Clear</button>}</div> : null}
-        {coverage?.gaps.length ? <div className="coverage-alert"><TriangleAlert /><div><strong>Missing statement dates</strong><span>{coverage.gaps.map((gap) => `${shortDate(gap.start)}–${shortDate(gap.end)} (${gap.days} ${gap.days === 1 ? "day" : "days"})`).join(" · ")}</span></div></div> : null}
-        {busy && !dashboard ? <EmptyState loading /> : view === "dashboard" ? <Dashboard data={dashboard} monthDetail={monthDetail} monthBusy={monthBusy} onMonthSelect={loadMonthDetail} onCloseMonth={() => setMonthDetail(null)} /> : view === "transactions" ? <TransactionList initialItems={transactions} categories={categories} /> : view === "topics" ? <TopicsPage /> : <ReviewQueue items={review} categories={categories} onApprove={approveTransactions} onClassify={classifyPending} onTopicsChanged={async () => setCategories(await apiRequest<Category[]>("/api/categories"))} busy={busy} />}
+        {busy && !dashboard ? <EmptyState loading /> : view === "dashboard" ? <Dashboard data={dashboard} coverage={coverage} monthDetail={monthDetail} monthBusy={monthBusy} onMonthSelect={loadMonthDetail} onCloseMonth={() => setMonthDetail(null)} /> : view === "transactions" ? <TransactionList initialItems={transactions} categories={categories} /> : view === "topics" ? <TopicsPage /> : <ReviewQueue items={review} categories={categories} onApprove={approveTransactions} onClassify={classifyPending} onTopicsChanged={async () => setCategories(await apiRequest<Category[]>("/api/categories"))} busy={busy} />}
       </main>
     </div>
   );
@@ -187,8 +208,16 @@ function NavItem({ active, icon, label, badge, onClick }: { active: boolean; ico
   return <button className={active ? "nav-item active" : "nav-item"} onClick={onClick}>{icon}<span>{label}</span>{badge ? <em>{badge}</em> : null}</button>;
 }
 
-function Dashboard({ data, monthDetail, monthBusy, onMonthSelect, onCloseMonth }: { data: DashboardData | null; monthDetail: DashboardData | null; monthBusy: boolean; onMonthSelect: (month: string) => Promise<void>; onCloseMonth: () => void }) {
-  const categoryNames = useMemo(() => [...new Set(data?.monthly.flatMap((row) => Object.keys(row).filter((key) => key !== "month")) ?? [])], [data]);
+function Dashboard({ data, coverage, monthDetail, monthBusy, onMonthSelect, onCloseMonth }: { data: DashboardData | null; coverage: CoverageData | null; monthDetail: DashboardData | null; monthBusy: boolean; onMonthSelect: (month: string) => Promise<void>; onCloseMonth: () => void }) {
+  const categoryNames = useMemo(() => {
+    const totals = new Map<string, number>();
+    for (const row of data?.monthly ?? []) {
+      for (const [name, value] of Object.entries(row)) {
+        if (name !== "month") totals.set(name, (totals.get(name) ?? 0) + Number(value));
+      }
+    }
+    return [...totals].sort((left, right) => right[1] - left[1]).map(([name]) => name);
+  }, [data]);
   const colors = Object.fromEntries((data?.categories ?? []).map((item) => [item.name, item.color]));
   if (!data || !data.available_periods.length) return <EmptyState />;
   const positiveCategories = data.categories.filter((item) => item.value > 0);
@@ -201,6 +230,8 @@ function Dashboard({ data, monthDetail, monthBusy, onMonthSelect, onCloseMonth }
         <Kpi label="Needs review" value={String(data.pending)} detail={data.pending ? "Help improve future imports" : "Everything is categorized"} icon={data.pending ? <CircleHelp /> : <Check />} tone={data.pending ? "warning" : "good"} />
       </section>
 
+      <CoverageTimeline coverage={coverage} />
+
       <section className="panel chart-panel">
         <div className="panel-heading"><div><p className="eyebrow">SPENDING HISTORY</p><h2>Net monthly spend by category</h2></div><span>{monthBusy ? "Loading month…" : "Click a month for details"}</span></div>
         <div className="bar-chart">
@@ -209,7 +240,15 @@ function Dashboard({ data, monthDetail, monthBusy, onMonthSelect, onCloseMonth }
               <CartesianGrid vertical={false} stroke="#e8e7e3" />
               <XAxis dataKey="month" tickFormatter={shortMonth} axisLine={false} tickLine={false} tick={{ fill: "#8b8f99", fontSize: 12 }} />
               <YAxis tickFormatter={(value) => compactEuro.format(value)} axisLine={false} tickLine={false} tick={{ fill: "#8b8f99", fontSize: 12 }} />
-              <Tooltip cursor={{ fill: "#f6f5f2" }} formatter={(value) => euro.format(Number(value))} labelFormatter={(value) => monthLabel(String(value))} />
+              <Tooltip
+                cursor={{ fill: "#f6f5f2" }}
+                formatter={(value) => euro.format(Number(value))}
+                itemSorter={(item) => categoryNames.indexOf(String(item.dataKey))}
+                labelFormatter={(value) => monthLabel(String(value))}
+                contentStyle={{ padding: "12px 14px", border: "1px solid #e1e0dc", borderRadius: 12, background: "#fff", boxShadow: "0 8px 24px rgba(32, 37, 43, .1)", fontSize: 11 }}
+                itemStyle={{ padding: "3px 0" }}
+                labelStyle={{ marginBottom: 7, color: "#4d5157", fontWeight: 600 }}
+              />
               {categoryNames.map((name) => <Bar key={name} dataKey={name} stackId="spend" fill={colors[name] || "#B2B8C5"} radius={[3, 3, 0, 0]} />)}
             </BarChart>
           </ResponsiveContainer>
@@ -233,6 +272,62 @@ function Dashboard({ data, monthDetail, monthBusy, onMonthSelect, onCloseMonth }
   );
 }
 
+type CoverageSegment = { start: string; end: string; imported: boolean; days: number };
+
+function coverageSegments(coverage: CoverageData, timelineEnd: string): CoverageSegment[] {
+  if (!coverage.start || !coverage.end || coverage.start > timelineEnd) return [];
+  const importedEnd = coverage.end < timelineEnd ? coverage.end : timelineEnd;
+  const gaps = coverage.gaps
+    .filter((gap) => gap.start <= timelineEnd)
+    .map((gap) => ({ start: gap.start, end: gap.end < timelineEnd ? gap.end : timelineEnd }));
+  const segments: CoverageSegment[] = [];
+  let cursor = coverage.start;
+
+  for (const gap of gaps) {
+    if (cursor < gap.start) {
+      const end = addDays(gap.start, -1);
+      segments.push({ start: cursor, end, imported: true, days: inclusiveDays(cursor, end) });
+    }
+    const start = cursor > gap.start ? cursor : gap.start;
+    if (start <= gap.end) segments.push({ start, end: gap.end, imported: false, days: inclusiveDays(start, gap.end) });
+    cursor = addDays(gap.end, 1);
+  }
+
+  if (cursor <= importedEnd) {
+    segments.push({ start: cursor, end: importedEnd, imported: true, days: inclusiveDays(cursor, importedEnd) });
+    cursor = addDays(importedEnd, 1);
+  }
+  if (cursor <= timelineEnd) segments.push({ start: cursor, end: timelineEnd, imported: false, days: inclusiveDays(cursor, timelineEnd) });
+  return segments;
+}
+
+function CoverageTimeline({ coverage }: { coverage: CoverageData | null }) {
+  const timelineEnd = today();
+  if (!coverage?.start) return null;
+  const segments = coverageSegments(coverage, timelineEnd);
+  if (!segments.length) return null;
+  const gapCount = segments.filter((segment) => !segment.imported).length;
+  const description = segments.map((segment) => `${segment.imported ? "Imported" : "Not imported"} ${shortDate(segment.start)} to ${shortDate(segment.end)}`).join("; ");
+
+  return <section className="panel coverage-timeline">
+    <div className="panel-heading">
+      <div><p className="eyebrow">STATEMENT HISTORY</p><h2>Imported transaction coverage</h2></div>
+      <span>{gapCount ? `${gapCount} ${gapCount === 1 ? "gap" : "gaps"}` : "Complete coverage"}</span>
+    </div>
+    <p className="coverage-subtitle">From the earliest imported statement through today</p>
+    <div className="coverage-track" role="img" aria-label={description}>
+      {segments.map((segment) => <span
+        key={`${segment.start}-${segment.imported}`}
+        className={segment.imported ? "coverage-segment imported" : "coverage-segment gap"}
+        style={{ flexGrow: segment.days }}
+        title={`${segment.imported ? "Imported" : "Not imported"} · ${shortDate(segment.start)} – ${shortDate(segment.end)}`}
+      />)}
+    </div>
+    <div className="coverage-axis"><span>{shortDate(coverage.start)}</span><span>Today · {shortDate(timelineEnd)}</span></div>
+    <div className="coverage-legend"><span><i className="imported" />Imported</span><span><i className="gap" />Not imported</span></div>
+  </section>;
+}
+
 function MonthDetail({ data, onClose }: { data: DashboardData; onClose: () => void }) {
   const categoryScale = Math.max(1, ...data.categories.map((category) => Math.abs(category.value)));
   return <section className="panel month-detail">
@@ -254,6 +349,8 @@ function TransactionList({ initialItems, categories }: { initialItems: Transacti
   const [endDate, setEndDate] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [topicEdit, setTopicEdit] = useState<{ transactionId: number; description: string; categoryId: number | null; additionalCategoryIds: number[] } | null>(null);
+  const [topicSaving, setTopicSaving] = useState(false);
   const topicRows = useMemo(() => taxonomyRows(categories), [categories]);
 
   useEffect(() => setItems(initialItems), [initialItems]);
@@ -304,6 +401,38 @@ function TransactionList({ initialItems, categories }: { initialItems: Transacti
       .finally(() => setLoading(false));
   };
 
+  const editTopics = (item: Transaction) => setTopicEdit({
+    transactionId: item.id,
+    description: item.ai_description ?? "",
+    categoryId: item.category_id ?? item.proposed_category_id,
+    additionalCategoryIds: (item.additional_categories.length ? item.additional_categories : item.proposed_additional_categories).map((topic) => topic.id),
+  });
+
+  const toggleEditTopic = (categoryId: number) => setTopicEdit((current) => {
+    if (!current) return current;
+    const selected = current.additionalCategoryIds.includes(categoryId);
+    return { ...current, additionalCategoryIds: selected ? current.additionalCategoryIds.filter((id) => id !== categoryId) : [...current.additionalCategoryIds, categoryId] };
+  });
+
+  const saveTopics = async () => {
+    if (!topicEdit?.categoryId || !topicEdit.description.trim()) return;
+    setTopicSaving(true);
+    setError("");
+    try {
+      const updated = await apiRequest<Transaction>(`/api/transactions/${topicEdit.transactionId}/topics`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ description: topicEdit.description.trim(), category_id: topicEdit.categoryId, additional_category_ids: topicEdit.additionalCategoryIds }),
+      });
+      setItems((current) => current.map((item) => item.id === updated.id ? updated : item));
+      setTopicEdit(null);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Unable to update topics");
+    } finally {
+      setTopicSaving(false);
+    }
+  };
+
   const hasFilters = Boolean(name || topicId || startDate || endDate);
   return <div className="transactions-page">
     <section className="panel transaction-filters">
@@ -317,12 +446,22 @@ function TransactionList({ initialItems, categories }: { initialItems: Transacti
       </div>
       {error && <div className="filter-error">{error}</div>}
     </section>
-    <section className="panel full-list"><div className="table-title"><div><ReceiptText /><span>{loading ? "Finding transactions…" : `${items.length} ${items.length === 1 ? "transaction" : "transactions"}`}</span></div>{hasFilters && !loading && <span>Filtered results</span>}</div>{!loading && (items.length ? <TransactionRows items={items} showStatus /> : <div className="no-filter-results"><Search /><strong>No matching transactions</strong><span>Try clearing or broadening a filter.</span></div>)}</section>
+    <section className="panel full-list"><div className="table-title"><div><ReceiptText /><span>{loading ? "Finding transactions…" : `${items.length} ${items.length === 1 ? "transaction" : "transactions"}`}</span></div>{hasFilters && !loading && <span>Filtered results</span>}</div>{!loading && (items.length ? <div className="transaction-list">{items.map((item) => <div className="transaction-edit-entry" key={item.id}><TransactionRow item={item} showStatus action={item.status === "excluded" ? <span /> : <button className="edit-transaction-topics" aria-label={`Edit transaction details for ${item.merchant}`} title="Edit transaction details" onClick={() => editTopics(item)}><Tags /></button>} />{topicEdit?.transactionId === item.id && <div className="transaction-topic-editor"><label className="transaction-description-editor"><span>Description</span><textarea aria-label={`Edited description for ${item.merchant}`} maxLength={160} placeholder="Add a short description" value={topicEdit.description} onChange={(event) => setTopicEdit({ ...topicEdit, description: event.target.value })} /></label><TopicAssignmentPicker categories={categories} primaryId={topicEdit.categoryId} contextIds={topicEdit.additionalCategoryIds} label={item.merchant} onPrimary={(categoryId) => setTopicEdit({ ...topicEdit, categoryId, additionalCategoryIds: topicEdit.additionalCategoryIds.filter((id) => id !== categoryId) })} onContext={toggleEditTopic} /><div className="transaction-topic-actions"><button className="cancel-topic-edit" disabled={topicSaving} onClick={() => setTopicEdit(null)}>Cancel</button><button disabled={topicSaving || !topicEdit.description.trim() || !topicEdit.categoryId} onClick={() => void saveTopics()}>{topicSaving ? <LoaderCircle className="spinner" /> : <Check />}Save changes</button></div></div>}</div>)}</div> : <div className="no-filter-results"><Search /><strong>No matching transactions</strong><span>Try clearing or broadening a filter.</span></div>)}</section>
   </div>;
 }
 
 function TransactionRows({ items, showStatus = false }: { items: Transaction[]; showStatus?: boolean }) {
-  return <div className="transaction-list">{items.map((item) => <div className="transaction" key={item.id}><div className="merchant-icon">{item.merchant.charAt(0)}</div><div className="transaction-main"><strong>{item.merchant}</strong><span>{new Date(`${item.date}T00:00:00`).toLocaleDateString("en", { day: "numeric", month: "short" })}</span></div><div className="transaction-topics"><span className="category-pill"><i style={{ background: item.category_color }} />{item.category || item.exclusion_reason?.replaceAll("_", " ") || "Pending review"}</span>{item.additional_categories.map((topic) => <span className="context-topic-pill" key={topic.id}>{topic.name}</span>)}</div>{showStatus && <span className={`status ${item.status}`}>{item.status}</span>}<strong className={item.amount >= 0 ? "amount income" : "amount"}>{signedEuro(item.amount)}</strong></div>)}</div>;
+  return <div className="transaction-list">{items.map((item) => <TransactionRow item={item} key={item.id} showStatus={showStatus} />)}</div>;
+}
+
+function TransactionRow({ item, showStatus = false, action }: { item: Transaction; showStatus?: boolean; action?: React.ReactNode }) {
+  return <div className={`transaction ${action ? "with-action" : ""}`}><div className="merchant-icon">{item.merchant.charAt(0)}</div><div className="transaction-main"><strong>{item.merchant}</strong><span>{new Date(`${item.date}T00:00:00`).toLocaleDateString("en", { day: "numeric", month: "short" })}</span></div><div className="transaction-topics"><span className="category-pill"><i style={{ background: item.category_color }} />{item.category || item.exclusion_reason?.replaceAll("_", " ") || "Pending review"}</span>{item.additional_categories.map((topic) => <span className="context-topic-pill" key={topic.id}>{topic.name}</span>)}</div>{showStatus && <span className={`status ${item.status}`}>{item.status}</span>}<strong className={item.amount >= 0 ? "amount income" : "amount"}>{signedEuro(item.amount)}</strong>{action}</div>;
+}
+
+function TopicAssignmentPicker({ categories, primaryId, contextIds, label, onPrimary, onContext }: { categories: Category[]; primaryId: number | null; contextIds: number[]; label: string; onPrimary: (categoryId: number) => void; onContext: (categoryId: number) => void }) {
+  const primary = categories.find((topic) => topic.id === primaryId);
+  const summary = primary ? `${primary.name}${contextIds.length ? ` + ${contextIds.length} context` : ""}` : "Choose topics";
+  return <details className="topic-assignment-picker"><summary><span>Topics</span><strong>{summary}</strong></summary><div className="topic-assignment-menu"><div className="topic-assignment-head"><span>Topic</span><span>Primary</span><span>Context</span></div>{taxonomyRows(categories).map(({ topic, depth }) => <div className="topic-assignment-row" key={topic.id}><span style={{ paddingLeft: depth * 14 }}>{topic.name}</span><label className="primary-topic-choice"><input type="radio" name={`primary-${label}`} aria-label={`Set ${topic.name} as primary for ${label}`} checked={primaryId === topic.id} onChange={() => onPrimary(topic.id)} /><span>Primary</span></label><label className="context-topic-choice"><input type="checkbox" aria-label={`Use ${topic.name} as context for ${label}`} checked={contextIds.includes(topic.id)} disabled={primaryId === topic.id} onChange={() => onContext(topic.id)} /><span>Context</span></label></div>)}</div></details>;
 }
 
 type ReviewDraft = { description: string; categoryId: number | null; additionalCategoryIds: number[] };
@@ -339,6 +478,7 @@ function ReviewQueue({ items, categories, onApprove, onClassify, onTopicsChanged
   const [proposals, setProposals] = useState<Record<number, TopicProposal>>({});
   const [topicBusy, setTopicBusy] = useState<number | null>(null);
   const [topicErrors, setTopicErrors] = useState<Record<number, string>>({});
+  const [topicCreatorVersions, setTopicCreatorVersions] = useState<Record<number, number>>({});
   const [reviewError, setReviewError] = useState("");
   const topicRows = useMemo(() => taxonomyRows(categories), [categories]);
 
@@ -356,6 +496,7 @@ function ReviewQueue({ items, categories, onApprove, onClassify, onTopicsChanged
 
   const sortedItems = useMemo(() => [...items].sort((left, right) => {
     if (sort === "date-desc") return right.date.localeCompare(left.date);
+    if (sort === "date-asc") return left.date.localeCompare(right.date);
     const leftConfidence = left.confidence ?? -1;
     const rightConfidence = right.confidence ?? -1;
     return sort === "confidence-desc" ? rightConfidence - leftConfidence : leftConfidence - rightConfidence;
@@ -371,7 +512,7 @@ function ReviewQueue({ items, categories, onApprove, onClassify, onTopicsChanged
   const approve = async (candidates: Transaction[]) => {
     const approvals = candidates.map(approvalFor).filter((item): item is Approval => item !== null);
     if (!approvals.length) {
-      setReviewError("Add a short description and leaf topic before approving");
+      setReviewError("Add a short description and topic before approving");
       return;
     }
     await onApprove(approvals);
@@ -400,6 +541,7 @@ function ReviewQueue({ items, categories, onApprove, onClassify, onTopicsChanged
       setCustomNames((current) => ({ ...current, [transactionId]: "" }));
       setCustomParents((current) => ({ ...current, [transactionId]: "" }));
       setProposals((current) => { const next = { ...current }; delete next[transactionId]; return next; });
+      setTopicCreatorVersions((current) => ({ ...current, [transactionId]: (current[transactionId] ?? 0) + 1 }));
     } catch (error) {
       setTopicErrors((current) => ({ ...current, [transactionId]: error instanceof Error ? error.message : "Unable to create topic" }));
     } finally {
@@ -438,6 +580,7 @@ function ReviewQueue({ items, categories, onApprove, onClassify, onTopicsChanged
       setCustomParents((current) => ({ ...current, [transactionId]: "" }));
       setCodexInstructions((current) => ({ ...current, [transactionId]: "" }));
       setProposals((current) => { const next = { ...current }; delete next[transactionId]; return next; });
+      setTopicCreatorVersions((current) => ({ ...current, [transactionId]: (current[transactionId] ?? 0) + 1 }));
     } catch (error) {
       setTopicErrors((current) => ({ ...current, [transactionId]: error instanceof Error ? error.message : "Unable to apply Codex suggestion" }));
     } finally {
@@ -476,20 +619,21 @@ function ReviewQueue({ items, categories, onApprove, onClassify, onTopicsChanged
     <div className="review-toolbar">
       <div><strong>{items.length} transactions await approval</strong><span>Review Codex’s description, primary topic, and context topics, then approve.</span></div>
       <div className="review-toolbar-actions">
-        <select aria-label="Sort review queue" value={sort} onChange={(event) => setSort(event.target.value)}><option value="confidence-asc">Lowest confidence first</option><option value="confidence-desc">Highest confidence first</option><option value="date-desc">Newest first</option></select>
+        <select aria-label="Sort review queue" value={sort} onChange={(event) => setSort(event.target.value)}><option value="confidence-asc">Lowest confidence first</option><option value="confidence-desc">Highest confidence first</option><option value="date-desc">Newest first</option><option value="date-asc">Oldest first</option></select>
         <button className="secondary-review-action" onClick={() => void runCodex()} disabled={busy}>{busy ? <LoaderCircle className="spinner" /> : <Sparkles />}Ask Codex</button>
         <button onClick={() => void approve(sortedItems.filter((item) => selected.has(item.id)))} disabled={busy || !selected.size}><Check />Approve selected ({selected.size})</button>
       </div>
     </div>
     <div className="review-batch-bar"><label><input type="checkbox" checked={selected.size === items.length} onChange={(event) => setSelected(event.target.checked ? new Set(items.map((item) => item.id)) : new Set())} />Select all</label><span>{items.filter(ready).length} ready</span><button onClick={() => void approve(items.filter(ready))} disabled={busy || !items.some(ready)}>Approve all ready</button></div>
     <div className="review-table">
-      <div className="review-table-head"><span /><span>Transaction</span><span>Codex description</span><span>Primary & context topics</span><span>Confidence</span></div>
+      <div className="review-table-head"><span /><span>Transaction</span><span>Codex description</span><span>Primary & context topics</span><span>Confidence</span><span /></div>
       {sortedItems.map((item) => <div className={`review-row ${selected.has(item.id) ? "selected" : ""}`} key={item.id}>
         <input aria-label={`Select ${item.merchant}`} type="checkbox" checked={selected.has(item.id)} onChange={(event) => setSelected((current) => { const next = new Set(current); event.target.checked ? next.add(item.id) : next.delete(item.id); return next; })} />
         <div className="review-transaction"><div><span className="merchant-icon">{item.merchant.charAt(0)}</span><div><strong>{item.merchant}</strong><small className={item.amount >= 0 ? "credit" : ""}>{shortDate(item.date)} · {signedEuro(item.amount)}</small></div></div><p title={item.description}>{item.description}</p></div>
         <textarea aria-label={`Description for ${item.merchant}`} rows={2} maxLength={160} placeholder="Ask Codex or write a short description" value={drafts[item.id]?.description ?? ""} onChange={(event) => setDrafts((current) => ({ ...current, [item.id]: { ...(current[item.id] ?? blankDraft()), description: event.target.value } }))} />
-        <div className="review-topic-field"><label className="primary-topic-label">Primary topic<select aria-label={`Primary topic for ${item.merchant}`} value={drafts[item.id]?.categoryId ?? ""} onChange={(event) => setPrimaryTopic(item.id, event.target.value ? Number(event.target.value) : null)}><option value="">Choose a leaf topic</option>{topicRows.map(({ topic, depth }) => <option key={topic.id} value={topic.id} disabled={!topic.is_leaf}>{topicLabel(topic.name, depth)}</option>)}</select></label><details className="additional-topic-picker"><summary>{drafts[item.id]?.additionalCategoryIds.length ? `${drafts[item.id].additionalCategoryIds.length} additional topic${drafts[item.id].additionalCategoryIds.length === 1 ? "" : "s"}` : "Add context topics"}</summary><div>{topicRows.map(({ topic, depth }) => <label className={!topic.is_leaf ? "topic-group-label" : ""} key={topic.id} style={{ paddingLeft: 7 + depth * 14 }}><input type="checkbox" checked={drafts[item.id]?.additionalCategoryIds.includes(topic.id) ?? false} disabled={!topic.is_leaf || drafts[item.id]?.categoryId === topic.id} onChange={() => toggleAdditionalTopic(item.id, topic.id)} />{topic.name}</label>)}</div></details><details><summary>Add a new topic</summary><div className="topic-creation-options"><div className="topic-creation-option"><span>Add directly</span><input aria-label={`New topic name for ${item.merchant}`} placeholder="Specific topic name" value={customNames[item.id] ?? ""} onChange={(event) => setCustomNames({ ...customNames, [item.id]: event.target.value })} /><select aria-label={`Parent for new topic on ${item.merchant}`} value={customParents[item.id] ?? ""} onChange={(event) => setCustomParents({ ...customParents, [item.id]: event.target.value })}><option value="">Root topic</option>{topicRows.map(({ topic, depth }) => <option key={topic.id} value={topic.id}>{topicLabel(topic.name, depth)}</option>)}</select><button disabled={topicBusy !== null || !customNames[item.id]?.trim()} onClick={() => void createCustom(item.id)}><Plus />Add topic</button></div><div className="topic-creation-option codex-topic-option"><span>Plan with Codex</span><textarea aria-label={`Taxonomy request for ${item.merchant}`} maxLength={1000} placeholder="Explain why you need a new topic and how the current topics should be reorganized, if needed." value={codexInstructions[item.id] ?? ""} onChange={(event) => setCodexInstructions({ ...codexInstructions, [item.id]: event.target.value })} /><button disabled={topicBusy !== null || !codexInstructions[item.id]?.trim()} onClick={() => void proposeCustom(item.id)}>{topicBusy === item.id && !proposals[item.id] ? <LoaderCircle className="spinner" /> : <Sparkles />}Make proposal</button>{proposals[item.id] && <InlineTopicProposal proposal={proposals[item.id]} busy={topicBusy === item.id} onApply={() => void applyProposal(item.id)} onReject={() => void rejectProposal(item.id)} />}</div></div>{topicErrors[item.id] && <p className="inline-topic-error">{topicErrors[item.id]}</p>}</details></div>
+        <div className="review-topic-field"><TopicAssignmentPicker categories={categories} primaryId={drafts[item.id]?.categoryId ?? null} contextIds={drafts[item.id]?.additionalCategoryIds ?? []} label={item.merchant} onPrimary={(categoryId) => setPrimaryTopic(item.id, categoryId)} onContext={(categoryId) => toggleAdditionalTopic(item.id, categoryId)} /><details key={`${item.id}-${topicCreatorVersions[item.id] ?? 0}`}><summary>Add a new topic</summary><div className="topic-creation-options"><div className="topic-creation-option"><span>Add directly</span><input aria-label={`New topic name for ${item.merchant}`} placeholder="Specific topic name" value={customNames[item.id] ?? ""} onChange={(event) => setCustomNames({ ...customNames, [item.id]: event.target.value })} /><select aria-label={`Parent for new topic on ${item.merchant}`} value={customParents[item.id] ?? ""} onChange={(event) => setCustomParents({ ...customParents, [item.id]: event.target.value })}><option value="">Root topic</option>{topicRows.map(({ topic, depth }) => <option key={topic.id} value={topic.id}>{topicLabel(topic.name, depth)}</option>)}</select><button disabled={topicBusy !== null || !customNames[item.id]?.trim()} onClick={() => void createCustom(item.id)}><Plus />Add topic</button></div><div className="topic-creation-option codex-topic-option"><span>Plan with Codex</span><textarea aria-label={`Taxonomy request for ${item.merchant}`} maxLength={1000} placeholder="Explain why you need a new topic and how the current topics should be reorganized, if needed." value={codexInstructions[item.id] ?? ""} onChange={(event) => setCodexInstructions({ ...codexInstructions, [item.id]: event.target.value })} /><button disabled={topicBusy !== null || !codexInstructions[item.id]?.trim()} onClick={() => void proposeCustom(item.id)}>{topicBusy === item.id && !proposals[item.id] ? <LoaderCircle className="spinner" /> : <Sparkles />}Make proposal</button>{proposals[item.id] && <InlineTopicProposal proposal={proposals[item.id]} busy={topicBusy === item.id} onApply={() => void applyProposal(item.id)} onReject={() => void rejectProposal(item.id)} />}</div></div>{topicErrors[item.id] && <p className="inline-topic-error">{topicErrors[item.id]}</p>}</details></div>
         <span className={`confidence ${item.confidence === null ? "unknown" : item.confidence < .65 ? "low" : item.confidence < .85 ? "medium" : "high"}`}>{item.confidence === null ? "Not scored" : `${Math.round(item.confidence * 100)}%`}</span>
+        <button className="approve-row-action" aria-label={`Approve ${item.merchant}`} title="Approve transaction" disabled={busy || !ready(item)} onClick={() => void approve([item])}><Check /></button>
       </div>)}
     </div>
   </div>;

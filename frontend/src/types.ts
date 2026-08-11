@@ -38,6 +38,7 @@ export type Transaction = {
   merchant: string;
   amount: number;
   category: string | null;
+  category_id: number | null;
   category_color: string;
   proposed_category_id: number | null;
   proposed_category: string | null;

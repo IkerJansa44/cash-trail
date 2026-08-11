@@ -154,8 +154,9 @@ def classify_transactions(
     prompt = (
         "Review every personal bank transaction separately. Negative amounts are expenses; "
         "positive amounts are refunds or repayments that reduce spending. For each one, write a "
-        "plain, very short sentence (at most 14 words), choose exactly one primary leaf topic, "
-        "zero or more additional leaf topics, and an honest confidence score. The primary topic "
+        "plain, very short sentence (at most 14 words), choose exactly one primary topic, "
+        "zero or more additional topics, and an honest confidence score. Both group and leaf "
+        "topics are valid choices. The primary topic "
         "is the exclusive accounting allocation used in totals and stacked charts. Additional "
         "topics are overlapping context only, so include them when they materially improve search "
         "or understanding and never repeat the primary topic. Assign a positive transaction's "
@@ -165,7 +166,7 @@ def classify_transactions(
         "merchant name in its likely Spanish or Catalan context, prefer reliable merchant sites "
         "and business listings, and distinguish similarly named businesses. Never invent a match; "
         "lower confidence when web evidence is inconclusive.\n"
-        f"Allowed leaf topics: {json.dumps(categories, ensure_ascii=False)}\n"
+        f"Allowed topics: {json.dumps(categories, ensure_ascii=False)}\n"
         f"Prior merchant hints: {json.dumps(rule_hints or {}, ensure_ascii=False)}\n"
         f"Transactions: {json.dumps(transactions, ensure_ascii=False, default=str)}"
     )
