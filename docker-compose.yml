@@ -1,0 +1,23 @@
+services:
+  backend:
+    build: ./backend
+    environment:
+      DATABASE_URL: sqlite:////data/cash-trail.db
+      CODEX_HOME: /codex-home
+      CODEX_TIMEOUT_SECONDS: ${CODEX_TIMEOUT_SECONDS:-120}
+    volumes:
+      - cash-trail-data:/data
+      - codex-home:/codex-home
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build: ./frontend
+    depends_on:
+      - backend
+    ports:
+      - "3000:80"
+
+volumes:
+  cash-trail-data:
+  codex-home:
