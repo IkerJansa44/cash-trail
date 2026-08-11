@@ -1,1 +1,1 @@
-{"root":["./src/app.tsx","./src/topics.tsx","./src/api.ts","./src/main.tsx","./src/topictaxonomy.ts","./src/types.ts","./src/vite-env.d.ts"],"version":"6.0.3"}
+{"root":["./src/app.tsx","./src/notifications.tsx","./src/topics.tsx","./src/api.ts","./src/main.tsx","./src/topictaxonomy.ts","./src/types.ts","./src/vite-env.d.ts"],"version":"6.0.3"}

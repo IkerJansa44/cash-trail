@@ -44,7 +44,7 @@ docker compose run --rm backend codex login --device-auth
 docker compose up
 ```
 
-Open [http://localhost:3000](http://localhost:3000). The dashboard and database are stored in Docker
+Open [http://localhost:3000/cash-trail/](http://localhost:3000/cash-trail/). The dashboard and database are stored in Docker
 volumes and remain on this computer.
 
 The Codex login is persisted in the `codex-home` volume. It can use the Codex allowance associated
@@ -52,7 +52,27 @@ with an eligible ChatGPT account; it is not an OpenAI API integration.
 
 ## Configuration
 
-Copy `.env.example` to `.env` to change the Codex CLI timeout.
+Copy `.env.example` to `.env` to change the Codex CLI timeout or configure iPhone notifications.
+
+### iPhone notifications
+
+Cash Trail is an installable PWA with standards-based Web Push. Create one VAPID P-256 key pair,
+keep it stable between deployments, and set `WEB_PUSH_VAPID_PUBLIC_KEY`,
+`WEB_PUSH_VAPID_PRIVATE_KEY`, and `WEB_PUSH_VAPID_SUBJECT` in `.env`. The subject must be a monitored
+`mailto:` address or an HTTPS contact URL. The private key must never be exposed to the frontend or
+committed.
+
+The iPhone must reach Cash Trail through HTTPS; an HTTP LAN address is not sufficient. Open that
+HTTPS origin in Safari, choose **Share → Add to Home Screen**, launch Cash Trail from its Home Screen
+icon, open **Notifications**, and tap **Enable on this device**. Permission is requested only from
+that tap. Use **Send test** to verify server-to-device delivery before adding automatic alert rules.
+
+Cash Trail has no email notification channel. The test route is the manual sender. At 20:00
+Europe/Madrid on the final day of each month, the backend also sends one
+deduplicated reminder when no statement import was recorded during that calendar month. Failed push
+deliveries remain retryable during the evening. If the Mac or backend was unavailable, the same
+deduplicated check catches up during the first seven days of the next month. Override the hour and
+timezone with `MONTH_END_IMPORT_REMINDER_HOUR` and `NOTIFICATION_TIMEZONE`.
 
 ## Development checks
 

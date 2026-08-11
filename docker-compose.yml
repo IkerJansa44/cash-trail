@@ -5,6 +5,11 @@ services:
       DATABASE_URL: sqlite:////data/cash-trail.db
       CODEX_HOME: /codex-home
       CODEX_TIMEOUT_SECONDS: ${CODEX_TIMEOUT_SECONDS:-120}
+      WEB_PUSH_VAPID_PUBLIC_KEY: ${WEB_PUSH_VAPID_PUBLIC_KEY:-}
+      WEB_PUSH_VAPID_PRIVATE_KEY: ${WEB_PUSH_VAPID_PRIVATE_KEY:-}
+      WEB_PUSH_VAPID_SUBJECT: ${WEB_PUSH_VAPID_SUBJECT:-}
+      NOTIFICATION_TIMEZONE: ${NOTIFICATION_TIMEZONE:-Europe/Madrid}
+      MONTH_END_IMPORT_REMINDER_HOUR: ${MONTH_END_IMPORT_REMINDER_HOUR:-20}
     volumes:
       - cash-trail-data:/data
       - codex-home:/codex-home

@@ -1,3 +1,4 @@
+import asyncio
 import json
 from calendar import monthrange
 from collections import defaultdict
@@ -29,6 +30,8 @@ from .models import (
     Transaction,
     TransactionTag,
 )
+from .notifications import run_notification_scheduler
+from .push import router as push_router
 
 CATEGORY_SEEDS = [
     ("Housing", "#7357D9"),
@@ -220,10 +223,17 @@ def initialize_database() -> None:
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     initialize_database()
-    yield
+    stop = asyncio.Event()
+    scheduler = asyncio.create_task(run_notification_scheduler(stop))
+    try:
+        yield
+    finally:
+        stop.set()
+        await scheduler
 
 
 app = FastAPI(title="Cash Trail", version="0.1.0", lifespan=lifespan)
+app.include_router(push_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000"],
@@ -1152,7 +1162,7 @@ def _serialize_transaction(item: Transaction, categories: dict[int, Category]) -
         "amount": float(item.amount),
         "category": category.name if category else None,
         "category_id": category.id if category else None,
-        "category_color": category.color if category else "#D5D9E2",
+        "category_color": (category or proposed).color if category or proposed else "#D5D9E2",
         "proposed_category_id": proposed.id if proposed else None,
         "proposed_category": proposed.name if proposed else None,
         "proposed_category_path": paths[proposed.id] if proposed else None,

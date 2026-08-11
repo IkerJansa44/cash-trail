@@ -182,6 +182,7 @@ def test_refund_can_create_a_negative_net_topic_total() -> None:
 
     assert result["total"] == -15.0
     assert result["categories"] == [{"name": "Travel", "value": -15.0, "color": "#3AA6B9"}]
+    assert result["monthly"] == [{"month": "2026-08", "Travel": -15.0}]
     assert result["expense_count"] == 1
     assert result["credit_count"] == 1
     assert topic_tree(db)["tree"][0]["total_spend"] == -15.0

@@ -3,9 +3,12 @@ import {
   ArrowDownRight,
   ArrowUpRight,
   Ban,
+  BellRing,
   CalendarRange,
   ChartNoAxesCombined,
   Check,
+  ChevronLeft,
+  ChevronRight,
   CircleHelp,
   LayoutDashboard,
   ListFilter,
@@ -26,6 +29,7 @@ import {
   Cell,
   Pie,
   PieChart,
+  ReferenceLine,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -34,11 +38,22 @@ import {
 import { apiRequest } from "./api";
 import { taxonomyRows, topicLabel } from "./topicTaxonomy";
 import TopicsPage from "./Topics";
+import NotificationsPage from "./Notifications";
 import type { Category, CoverageData, DashboardData, TopicProposal, Transaction } from "./types";
 
-type View = "dashboard" | "transactions" | "review" | "topics";
+type View = "dashboard" | "transactions" | "review" | "topics" | "notifications";
 type CodexProgress = { completed: number; total: number; remainingSeconds: number | null; updatedAt: number };
-const viewPaths: Record<View, string> = { dashboard: "/overview", transactions: "/transactions", topics: "/topics", review: "/review" };
+type MonthlyChartRow = Record<string, string | number> & { month: string; netTotal: number };
+type SwipeOrigin = { x: number; y: number; lastX: number; startedAt: number; axis: "x" | "y" | null };
+const appBase = import.meta.env.BASE_URL.replace(/\/$/, "");
+const viewOrder: View[] = ["dashboard", "transactions", "topics", "review", "notifications"];
+const viewPaths: Record<View, string> = {
+  dashboard: `${appBase}/overview`,
+  transactions: `${appBase}/transactions`,
+  topics: `${appBase}/topics`,
+  review: `${appBase}/review`,
+  notifications: `${appBase}/notifications`,
+};
 const codexBatchSize = 20;
 const viewFromPath = (path: string): View => (Object.entries(viewPaths).find(([, value]) => value === path)?.[0] as View | undefined) ?? "dashboard";
 const euro = new Intl.NumberFormat("en-IE", { style: "currency", currency: "EUR" });
@@ -72,7 +87,11 @@ export default function App() {
   const [monthBusy, setMonthBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [codexProgress, setCodexProgress] = useState<CodexProgress | null>(null);
+  const [swipeOffset, setSwipeOffset] = useState(0);
+  const [swipeAnimating, setSwipeAnimating] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
+  const swipeOrigin = useRef<SwipeOrigin | null>(null);
+  const swipeTimer = useRef<number | null>(null);
 
   const navigate = (nextView: View) => {
     if (window.location.pathname !== viewPaths[nextView]) window.history.pushState({}, "", viewPaths[nextView]);
@@ -86,6 +105,70 @@ export default function App() {
     window.addEventListener("popstate", syncView);
     return () => window.removeEventListener("popstate", syncView);
   }, []);
+
+  useEffect(() => () => {
+    if (swipeTimer.current !== null) window.clearTimeout(swipeTimer.current);
+  }, []);
+
+  const settleSwipe = () => {
+    setSwipeAnimating(true);
+    setSwipeOffset(0);
+    swipeTimer.current = window.setTimeout(() => setSwipeAnimating(false), 220);
+  };
+
+  const completeSwipe = (nextView: View, direction: -1 | 1) => {
+    setSwipeAnimating(true);
+    setSwipeOffset(-direction * window.innerWidth);
+    swipeTimer.current = window.setTimeout(() => {
+      navigate(nextView);
+      setSwipeAnimating(false);
+      setSwipeOffset(direction * window.innerWidth * 0.22);
+      window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+        setSwipeAnimating(true);
+        setSwipeOffset(0);
+        swipeTimer.current = window.setTimeout(() => setSwipeAnimating(false), 240);
+      }));
+    }, 180);
+  };
+
+  const startSwipe = (event: React.TouchEvent<HTMLElement>) => {
+    if (swipeAnimating || event.touches.length !== 1 || !window.matchMedia("(max-width: 760px)").matches) return;
+    const target = event.target;
+    if (target instanceof Element && target.closest("button, input, select, textarea, a, details, [contenteditable], [data-swipe-ignore], .recharts-wrapper, .review-table")) return;
+    const touch = event.touches[0];
+    swipeOrigin.current = { x: touch.clientX, y: touch.clientY, lastX: touch.clientX, startedAt: performance.now(), axis: null };
+  };
+
+  const moveSwipe = (event: React.TouchEvent<HTMLElement>) => {
+    const origin = swipeOrigin.current;
+    if (!origin || event.touches.length !== 1) return;
+    const touch = event.touches[0];
+    const deltaX = touch.clientX - origin.x;
+    const deltaY = touch.clientY - origin.y;
+    origin.lastX = touch.clientX;
+    if (!origin.axis && Math.hypot(deltaX, deltaY) > 8) origin.axis = Math.abs(deltaX) > Math.abs(deltaY) ? "x" : "y";
+    if (origin.axis !== "x") return;
+    const index = viewOrder.indexOf(view);
+    const atEdge = (index === 0 && deltaX > 0) || (index === viewOrder.length - 1 && deltaX < 0);
+    setSwipeOffset(atEdge ? deltaX * 0.22 : deltaX);
+  };
+
+  const endSwipe = () => {
+    const origin = swipeOrigin.current;
+    swipeOrigin.current = null;
+    if (!origin || origin.axis !== "x") return;
+    const deltaX = origin.lastX - origin.x;
+    const direction = deltaX < 0 ? 1 : -1;
+    const nextIndex = viewOrder.indexOf(view) + direction;
+    const elapsed = Math.max(performance.now() - origin.startedAt, 1);
+    const committed = Math.abs(deltaX) > Math.min(window.innerWidth * 0.22, 84)
+      || (Math.abs(deltaX) > 30 && Math.abs(deltaX) / elapsed > 0.45);
+    if (!committed || nextIndex < 0 || nextIndex >= viewOrder.length) {
+      settleSwipe();
+      return;
+    }
+    completeSwipe(viewOrder[nextIndex], direction);
+  };
 
   const load = useCallback(async (selectedPeriod = period, customStart = "", customEnd = "") => {
     setBusy(true);
@@ -236,13 +319,15 @@ export default function App() {
           <NavItem active={view === "transactions"} icon={<ReceiptText />} label="Transactions" onClick={() => navigate("transactions")} />
           <NavItem active={view === "topics"} icon={<Tags />} label="Topics" onClick={() => navigate("topics")} />
           <NavItem active={view === "review"} icon={<CircleHelp />} label="Review" badge={dashboard?.pending_total} onClick={() => navigate("review")} />
+          <NavItem active={view === "notifications"} icon={<BellRing />} label="Notifications" onClick={() => navigate("notifications")} />
         </nav>
         <div className="privacy-note"><WalletCards /><div><strong>Local by design</strong><span>Your financial data stays on this computer.</span></div></div>
       </aside>
 
-      <main>
+      <main onTouchStart={startSwipe} onTouchMove={moveSwipe} onTouchEnd={endSwipe} onTouchCancel={endSwipe}>
+        <div className={swipeAnimating ? "swipe-content animating" : "swipe-content"} style={{ transform: `translate3d(${swipeOffset}px, 0, 0)` }}>
         <header>
-          <div><p className="eyebrow">PERSONAL SPENDING</p><h1>{view === "dashboard" ? "Overview" : view === "transactions" ? "Transactions" : view === "topics" ? "Topics" : "Review classifications"}</h1></div>
+          <div><p className="eyebrow">PERSONAL SPENDING</p><h1>{view === "dashboard" ? "Overview" : view === "transactions" ? "Transactions" : view === "topics" ? "Topics" : view === "notifications" ? "Notifications" : "Review classifications"}</h1></div>
           <div className="header-actions">
             <button className="import-button" onClick={() => fileInput.current?.click()} disabled={busy}><Upload />Import statement</button>
             <input ref={fileInput} type="file" accept=".xls,.xlsx" hidden onChange={importFile} />
@@ -251,8 +336,9 @@ export default function App() {
 
         {notice && <div className="notice" onClick={() => setNotice("")}>{notice}<span>×</span></div>}
         {view === "review" && codexProgress && <CodexProgressBanner progress={codexProgress} />}
-        {view === "dashboard" && dashboard?.available_periods.length ? <div className="range-bar"><div><CalendarRange /><strong>Custom spending range</strong></div><input aria-label="Range start" type="date" value={rangeStart} onChange={(event) => setRangeStart(event.target.value)} /><span>to</span><input aria-label="Range end" type="date" value={rangeEnd} onChange={(event) => setRangeEnd(event.target.value)} /><button onClick={applyRange} disabled={busy}>View range</button>{dashboard.is_custom && <button className="clear-range" onClick={clearRange}>Clear</button>}</div> : null}
-        {busy && !dashboard ? <EmptyState loading /> : view === "dashboard" ? <Dashboard data={dashboard} coverage={coverage} monthDetail={monthDetail} monthBusy={monthBusy} onMonthSelect={loadMonthDetail} onCloseMonth={() => setMonthDetail(null)} /> : view === "transactions" ? <TransactionList initialItems={transactions} categories={categories} /> : view === "topics" ? <TopicsPage /> : <ReviewQueue items={review} categories={categories} onApprove={approveTransactions} onExclude={excludeReviewTransaction} onClassify={classifyPending} onTopicsChanged={async () => setCategories(await apiRequest<Category[]>("/api/categories"))} busy={busy} />}
+        {view === "dashboard" && dashboard?.available_periods.length ? <div className="range-bar"><div><CalendarRange /><strong>Custom spending range</strong></div><DateRangePicker start={rangeStart} end={rangeEnd} initialMonth={dashboard.period} busy={busy} onChange={(start, end) => { setRangeStart(start); setRangeEnd(end); }} onApply={applyRange} />{dashboard.is_custom && <button className="clear-range" onClick={clearRange}>Clear</button>}</div> : null}
+        {view === "notifications" ? <NotificationsPage /> : busy && !dashboard ? <EmptyState loading /> : view === "dashboard" ? <Dashboard data={dashboard} topics={categories} coverage={coverage} monthDetail={monthDetail} monthBusy={monthBusy} onMonthSelect={loadMonthDetail} onCloseMonth={() => setMonthDetail(null)} /> : view === "transactions" ? <TransactionList initialItems={transactions} categories={categories} /> : view === "topics" ? <TopicsPage /> : <ReviewQueue items={review} categories={categories} onApprove={approveTransactions} onExclude={excludeReviewTransaction} onClassify={classifyPending} onTopicsChanged={async () => setCategories(await apiRequest<Category[]>("/api/categories"))} busy={busy} />}
+        </div>
       </main>
     </div>
   );
@@ -282,10 +368,77 @@ function CodexProgressBanner({ progress }: { progress: CodexProgress }) {
 }
 
 function NavItem({ active, icon, label, badge, onClick }: { active: boolean; icon: React.ReactNode; label: string; badge?: number; onClick: () => void }) {
-  return <button className={active ? "nav-item active" : "nav-item"} onClick={onClick}>{icon}<span>{label}</span>{badge ? <em>{badge}</em> : null}</button>;
+  return <button className={active ? "nav-item active" : "nav-item"} aria-current={active ? "page" : undefined} aria-label={label} title={label} onClick={onClick}>{icon}<span>{label}</span>{badge ? <em>{badge}</em> : null}</button>;
 }
 
-function Dashboard({ data, coverage, monthDetail, monthBusy, onMonthSelect, onCloseMonth }: { data: DashboardData | null; coverage: CoverageData | null; monthDetail: DashboardData | null; monthBusy: boolean; onMonthSelect: (month: string) => Promise<void>; onCloseMonth: () => void }) {
+const shiftMonth = (month: string, amount: number) => {
+  const [year, monthNumber] = month.split("-").map(Number);
+  return new Date(Date.UTC(year, monthNumber - 1 + amount, 1)).toISOString().slice(0, 7);
+};
+
+const calendarDates = (month: string) => {
+  const first = `${month}-01`;
+  const weekday = (new Date(`${first}T00:00:00Z`).getUTCDay() + 6) % 7;
+  const start = addDays(first, -weekday);
+  return Array.from({ length: 42 }, (_, index) => addDays(start, index));
+};
+
+function DateRangePicker({ start, end, initialMonth, busy, onChange, onApply }: { start: string; end: string; initialMonth: string; busy: boolean; onChange: (start: string, end: string) => void; onApply: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [month, setMonth] = useState(start.slice(0, 7) || initialMonth);
+  const picker = useRef<HTMLDivElement>(null);
+  const dates = calendarDates(month);
+
+  useEffect(() => {
+    if (!open) return;
+    const close = (event: MouseEvent) => {
+      if (!picker.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const closeWithKeyboard = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("mousedown", close);
+    window.addEventListener("keydown", closeWithKeyboard);
+    return () => {
+      window.removeEventListener("mousedown", close);
+      window.removeEventListener("keydown", closeWithKeyboard);
+    };
+  }, [open]);
+
+  const selectDate = (date: string) => {
+    if (!start || end) {
+      onChange(date, "");
+      return;
+    }
+    if (date < start) onChange(date, start);
+    else onChange(start, date);
+  };
+
+  const apply = () => {
+    onApply();
+    setOpen(false);
+  };
+
+  return <div className="date-range-picker" ref={picker}>
+    <button className="date-range-trigger" aria-expanded={open} onClick={() => { setMonth(start.slice(0, 7) || initialMonth); setOpen((current) => !current); }}><CalendarRange /><span>{start && end ? rangeLabel(start, end) : start ? `${shortDate(start)} – Choose end` : "Choose date range"}</span></button>
+    {open && <div className="range-calendar">
+      <div className="range-calendar-selection"><div><span>Start date</span><strong>{start ? shortDate(start) : "Select a date"}</strong></div><div><span>End date</span><strong>{end ? shortDate(end) : "Select a date"}</strong></div></div>
+      <div className="range-calendar-heading"><button aria-label="Previous month" onClick={() => setMonth((current) => shiftMonth(current, -1))}><ChevronLeft /></button><strong>{monthLabel(month)}</strong><button aria-label="Next month" onClick={() => setMonth((current) => shiftMonth(current, 1))}><ChevronRight /></button></div>
+      <div className="range-calendar-weekdays">{["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((day) => <span key={day}>{day}</span>)}</div>
+      <div className="range-calendar-days">{dates.map((date, index) => {
+        const selected = date === start || date === end;
+        const inRange = Boolean(start && end && date >= start && date <= end);
+        const className = [date.slice(0, 7) !== month ? "outside" : "", inRange ? "in-range" : "", inRange && index % 7 === 0 ? "week-start" : "", inRange && index % 7 === 6 ? "week-end" : "", date === start ? "range-start" : "", date === end ? "range-end" : ""].filter(Boolean).join(" ");
+        return <button key={date} className={className} aria-label={shortDate(date)} aria-pressed={selected} onClick={() => selectDate(date)}>{Number(date.slice(8))}</button>;
+      })}</div>
+      <div className="range-calendar-actions"><span>{start && !end ? "Now choose an end date" : start && end ? `${inclusiveDays(start, end)} days selected` : "Choose the first day"}</span><button disabled={busy || !start || !end} onClick={apply}>Apply range</button></div>
+    </div>}
+  </div>;
+}
+
+function Dashboard({ data, topics, coverage, monthDetail, monthBusy, onMonthSelect, onCloseMonth }: { data: DashboardData | null; topics: Category[]; coverage: CoverageData | null; monthDetail: DashboardData | null; monthBusy: boolean; onMonthSelect: (month: string) => Promise<void>; onCloseMonth: () => void }) {
+  const [selectedCategories, setSelectedCategories] = useState<Set<string>>(new Set());
+  const [pieTooltipOpen, setPieTooltipOpen] = useState(false);
   const categoryNames = useMemo(() => {
     const totals = new Map<string, number>();
     for (const row of data?.monthly ?? []) {
@@ -295,7 +448,49 @@ function Dashboard({ data, coverage, monthDetail, monthBusy, onMonthSelect, onCl
     }
     return [...totals].sort((left, right) => right[1] - left[1]).map(([name]) => name);
   }, [data]);
+  const monthlyData = useMemo<MonthlyChartRow[]>(() => (data?.monthly ?? []).map((row) => ({
+    ...row,
+    month: String(row.month),
+    netTotal: Number(Object.entries(row).reduce(
+      (total, [name, value]) => name === "month" ? total : total + Number(value),
+      0,
+    ).toFixed(2)),
+  })), [data]);
   const colors = Object.fromEntries((data?.categories ?? []).map((item) => [item.name, item.color]));
+  const topicsById = new Map(topics.map((topic) => [topic.id, topic]));
+  const selectedTotal = (data?.categories ?? []).reduce((total, item) => selectedCategories.has(item.name) ? total + item.value : total, 0);
+  const recentTransactions = (data?.transactions ?? []).filter((item) => {
+    if (!selectedCategories.size) return true;
+    if (!item.category_id) return selectedCategories.has("Pending review");
+    let topic = topicsById.get(item.category_id);
+    while (topic?.parent_id) topic = topicsById.get(topic.parent_id);
+    return Boolean(topic && selectedCategories.has(topic.name));
+  });
+  const toggleCategory = (name: string) => setSelectedCategories((current) => {
+    const next = new Set(current);
+    if (next.has(name)) next.delete(name);
+    else next.add(name);
+    return next;
+  });
+  const clearCategorySelection = useCallback(() => {
+    setSelectedCategories(new Set());
+    setPieTooltipOpen(false);
+  }, []);
+  useEffect(clearCategorySelection, [data?.range_start, data?.range_end, clearCategorySelection]);
+  useEffect(() => {
+    const clearSelection = (event: KeyboardEvent) => {
+      if (event.key === "Escape") clearCategorySelection();
+    };
+    const clearOutsideSelection = (event: MouseEvent) => {
+      if (!(event.target instanceof Element) || !event.target.closest(".category-list button, .donut .recharts-sector")) clearCategorySelection();
+    };
+    window.addEventListener("keydown", clearSelection);
+    window.addEventListener("mousedown", clearOutsideSelection);
+    return () => {
+      window.removeEventListener("keydown", clearSelection);
+      window.removeEventListener("mousedown", clearOutsideSelection);
+    };
+  }, [clearCategorySelection]);
   if (!data || !data.available_periods.length) return <EmptyState />;
   const positiveCategories = data.categories.filter((item) => item.value > 0);
   const activeRange = rangeLabel(data.range_start, data.range_end);
@@ -308,30 +503,32 @@ function Dashboard({ data, coverage, monthDetail, monthBusy, onMonthSelect, onCl
         <Kpi label="Needs review" value={String(data.pending)} detail={data.pending ? "Help improve future imports" : "Everything is categorized"} icon={data.pending ? <CircleHelp /> : <Check />} tone={data.pending ? "warning" : "good"} />
       </section>
 
-      <CoverageTimeline coverage={coverage} rangeStart={data.is_custom ? data.range_start : undefined} rangeEnd={data.is_custom ? data.range_end : undefined} />
-
       <section className="panel chart-panel">
         <div className="panel-heading"><div><p className="eyebrow">SPENDING HISTORY</p><PanelTitle title="Net monthly spend by category" range={activeRange} /></div><span>{monthBusy ? "Loading month…" : "Click a month for details"}</span></div>
         <div className="bar-chart">
           <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={data.monthly} margin={{ top: 20, right: 8, left: -12, bottom: 0 }} barSize={34} onClick={(event) => { if (event?.activeLabel) void onMonthSelect(String(event.activeLabel)); }}>
+            <BarChart data={monthlyData} margin={{ top: 20, right: 8, left: -12, bottom: 0 }} stackOffset="sign" barGap={-22} onClick={(event) => { if (event?.activeLabel) void onMonthSelect(String(event.activeLabel)); }}>
               <CartesianGrid vertical={false} stroke="#e8e7e3" />
               <XAxis dataKey="month" tickFormatter={shortMonth} axisLine={false} tickLine={false} tick={{ fill: "#8b8f99", fontSize: 12 }} />
               <YAxis tickFormatter={(value) => compactEuro.format(value)} axisLine={false} tickLine={false} tick={{ fill: "#8b8f99", fontSize: 12 }} />
+              <ReferenceLine y={0} stroke="#a5a7aa" strokeWidth={1.2} />
               <Tooltip
                 cursor={{ fill: "#f6f5f2" }}
-                formatter={(value) => euro.format(Number(value))}
-                itemSorter={(item) => categoryNames.indexOf(String(item.dataKey))}
-                labelFormatter={(value) => monthLabel(String(value))}
-                contentStyle={{ padding: "12px 14px", border: "1px solid #e1e0dc", borderRadius: 12, background: "#fff", boxShadow: "0 8px 24px rgba(32, 37, 43, .1)", fontSize: 11 }}
-                itemStyle={{ padding: "3px 0" }}
-                labelStyle={{ marginBottom: 7, color: "#4d5157", fontWeight: 600 }}
+                content={({ active, label }) => {
+                  const month = monthlyData.find((row) => row.month === label);
+                  if (!active || !month) return null;
+                  return <div className="monthly-tooltip"><strong>{monthLabel(String(label))}</strong><ul>{categoryNames.filter((name) => name in month).map((name) => <li key={name}><span><i style={{ background: colors[name] || "#B2B8C5" }} />{name}</span><b>{euro.format(Number(month[name]))}</b></li>)}</ul><footer><span>Net total</span><b>{euro.format(month.netTotal)}</b></footer></div>;
+                }}
               />
-              {categoryNames.map((name) => <Bar key={name} dataKey={name} stackId="spend" fill={colors[name] || "#B2B8C5"} radius={[3, 3, 0, 0]} />)}
+              {categoryNames.map((name) => <Bar key={name} dataKey={name} stackId="topics" barSize={34} fill={colors[name] || "#B2B8C5"} fillOpacity={0.52} />)}
+              <Bar dataKey="netTotal" barSize={10} radius={[3, 3, 3, 3]}>
+                {monthlyData.map((row) => <Cell key={String(row.month)} fill={row.netTotal < 0 ? "#9E395F" : "#29243A"} />)}
+              </Bar>
             </BarChart>
           </ResponsiveContainer>
         </div>
-        <div className="legend">{categoryNames.map((name) => <span key={name}><i style={{ background: colors[name] || "#B2B8C5" }} />{name}</span>)}</div>
+        <div className="legend">{categoryNames.map((name) => <span key={name}><i style={{ background: colors[name] || "#B2B8C5" }} />{name}</span>)}<span className="net-total-legend"><i />Net total</span></div>
+        <div className="chart-note">Wide stacks show topic totals · Narrow dark columns show net monthly spend</div>
       </section>
 
       {monthDetail && <MonthDetail data={monthDetail} onClose={onCloseMonth} />}
@@ -340,12 +537,24 @@ function Dashboard({ data, coverage, monthDetail, monthBusy, onMonthSelect, onCl
         <section className="panel category-panel">
           <div className="panel-heading"><div><p className="eyebrow">BREAKDOWN</p><PanelTitle title="Net by category" range={activeRange} /></div></div>
           <div className="category-content">
-            <div className="donut"><ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={positiveCategories} dataKey="value" innerRadius={60} outerRadius={82} paddingAngle={2}>{positiveCategories.map((item) => <Cell key={item.name} fill={item.color} />)}</Pie><Tooltip formatter={(value) => euro.format(Number(value))} /></PieChart></ResponsiveContainer><div><strong>{euro.format(data.total)}</strong><span>Net total</span></div></div>
-            <div className="category-list">{data.categories.map((item) => <div key={item.name}><span><i style={{ background: item.color }} />{item.name}</span><strong className={item.value < 0 ? "net-credit" : ""}>{euro.format(item.value)}</strong></div>)}</div>
+            <div className="donut"><ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={positiveCategories} dataKey="value" innerRadius={60} outerRadius={82} paddingAngle={2}>{positiveCategories.map((item) => <Cell key={item.name} fill={item.color} opacity={!selectedCategories.size || selectedCategories.has(item.name) ? 1 : 0.35} stroke={selectedCategories.has(item.name) ? "#202329" : "#fff"} strokeWidth={selectedCategories.has(item.name) ? 2 : 1} style={{ cursor: "pointer" }} onMouseEnter={() => setPieTooltipOpen(true)} onMouseLeave={() => setPieTooltipOpen(false)} onClick={() => {
+              const wasSelected = selectedCategories.has(item.name);
+              toggleCategory(item.name);
+              setPieTooltipOpen(!wasSelected);
+            }} />)}</Pie><Tooltip active={pieTooltipOpen ? undefined : false} wrapperStyle={{ zIndex: 1 }} content={({ active, payload }) => {
+              const item = payload?.[0]?.payload as DashboardData["categories"][number] | undefined;
+              return active && item ? <div className="category-tooltip"><span><i style={{ background: item.color }} />{item.name}</span><strong>{euro.format(item.value)}</strong></div> : null;
+            }} /></PieChart></ResponsiveContainer><div aria-live="polite"><strong>{euro.format(selectedCategories.size ? selectedTotal : data.total)}</strong><span>{selectedCategories.size ? "Selected total" : "Net total"}</span></div></div>
+            <div className="category-list">{data.categories.map((item) => <button className={selectedCategories.has(item.name) ? "selected" : ""} key={item.name} aria-pressed={selectedCategories.has(item.name)} onClick={() => {
+              setPieTooltipOpen(false);
+              toggleCategory(item.name);
+            }}><span><i style={{ background: item.color }} />{item.name}</span><strong className={item.value < 0 ? "net-credit" : ""}>{euro.format(item.value)}</strong></button>)}</div>
           </div>
         </section>
-        <section className="panel recent-panel"><div className="panel-heading"><div><p className="eyebrow">ACTIVITY</p><PanelTitle title="Recent transactions" range={activeRange} /></div></div><TransactionRows items={data.recent} /></section>
+        <section className="panel recent-panel"><div className="panel-heading"><div><p className="eyebrow">ACTIVITY</p><PanelTitle title="Recent transactions" range={activeRange} /></div>{selectedCategories.size > 0 && <button className="clear-category-filter" onClick={clearCategorySelection}>Clear filter</button>}</div>{recentTransactions.length ? <TransactionRows items={recentTransactions} /> : <div className="no-recent-transactions"><Search /><strong>No recent transactions</strong><span>{selectedCategories.size ? "Try selecting another category." : "There are no transactions in this period."}</span></div>}</section>
       </div>
+
+      <CoverageTimeline coverage={coverage} rangeStart={data.is_custom ? data.range_start : undefined} rangeEnd={data.is_custom ? data.range_end : undefined} />
     </div>
   );
 }
@@ -385,6 +594,7 @@ function CoverageTimeline({ coverage, rangeStart, rangeEnd }: { coverage: Covera
   if (!timelineStart) return null;
   const segments = coverageSegments(coverage, timelineStart, timelineEnd);
   if (!segments.length) return null;
+  const importedSegments = segments.filter((segment) => segment.imported);
   const gapCount = segments.filter((segment) => !segment.imported).length;
   const description = segments.map((segment) => `${segment.imported ? "Imported" : "Not imported"} ${shortDate(segment.start)} to ${shortDate(segment.end)}`).join("; ");
 
@@ -404,6 +614,7 @@ function CoverageTimeline({ coverage, rangeStart, rangeEnd }: { coverage: Covera
     </div>
     <div className="coverage-axis"><span>{shortDate(timelineStart)}</span><span>{rangeEnd ? shortDate(timelineEnd) : `Today · ${shortDate(timelineEnd)}`}</span></div>
     <div className="coverage-legend"><span><i className="imported" />Imported</span><span><i className="gap" />Not imported</span></div>
+    <div className="coverage-ranges"><strong>Imported regions</strong><div>{importedSegments.map((segment) => <span key={`${segment.start}-${segment.end}`}><i />{rangeLabel(segment.start, segment.end)}</span>)}</div></div>
   </section>;
 }
 
@@ -568,7 +779,9 @@ function TransactionRows({ items, showStatus = false }: { items: Transaction[]; 
 }
 
 function TransactionRow({ item, showStatus = false, action }: { item: Transaction; showStatus?: boolean; action?: React.ReactNode }) {
-  return <div className={`transaction ${action ? "with-action" : ""}`}><div className="merchant-icon">{item.merchant.charAt(0)}</div><div className="transaction-main"><strong>{item.merchant}</strong><span>{new Date(`${item.date}T00:00:00`).toLocaleDateString("en", { day: "numeric", month: "short" })}</span></div><div className="transaction-topics"><span className="category-pill"><i style={{ background: item.category_color }} />{item.category || item.exclusion_reason?.replaceAll("_", " ") || "Pending review"}</span>{item.additional_categories.map((topic) => <span className="context-topic-pill" key={topic.id}>{topic.name}</span>)}</div>{showStatus && <span className={`status ${item.status}`}>{item.status}</span>}<strong className={item.amount >= 0 ? "amount income" : "amount"}>{signedEuro(item.amount)}</strong>{action}</div>;
+  const primaryTopic = item.category || item.proposed_category || item.exclusion_reason?.replaceAll("_", " ") || "Pending review";
+  const contextTopics = item.additional_categories.length ? item.additional_categories : item.proposed_additional_categories;
+  return <div className={`transaction ${action ? "with-action" : ""}`}><div className="merchant-icon">{item.merchant.charAt(0)}</div><div className="transaction-main"><strong>{item.merchant}</strong><span>{new Date(`${item.date}T00:00:00`).toLocaleDateString("en", { day: "numeric", month: "short" })}</span></div><div className="transaction-topics"><span className="category-pill" aria-label={`Primary topic: ${primaryTopic}`}><i style={{ background: item.category_color }} />{primaryTopic}</span>{contextTopics.map((topic) => <span className="context-topic-pill" key={topic.id}>{topic.name}</span>)}</div>{showStatus && <span className={`status ${item.status}`}>{item.status}</span>}<strong className={item.amount >= 0 ? "amount income" : "amount"}>{signedEuro(item.amount)}</strong>{action}</div>;
 }
 
 function TopicAssignmentPicker({ categories, primaryId, contextIds, label, onPrimary, onContext }: { categories: Category[]; primaryId: number | null; contextIds: number[]; label: string; onPrimary: (categoryId: number) => void; onContext: (categoryId: number) => void }) {
