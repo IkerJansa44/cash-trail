@@ -61,6 +61,10 @@ class ReviewApprovalRequest(BaseModel):
     items: list[ReviewApprovalItem] = Field(min_length=1)
 
 
+class ReviewClassificationRequest(BaseModel):
+    transaction_ids: list[int] = Field(min_length=1, max_length=25)
+
+
 class TransactionTopicsUpdate(BaseModel):
     description: str = Field(min_length=1, max_length=160)
     category_id: int
@@ -879,8 +883,13 @@ def review_queue(db: DatabaseSession) -> list[dict[str, object]]:
 
 
 @app.post("/api/review/classify")
-def classify_review_queue(db: DatabaseSession) -> dict[str, int]:
-    items = list(db.scalars(select(Transaction).where(Transaction.status == "pending")))
+def classify_review_queue(
+    db: DatabaseSession, request: ReviewClassificationRequest | None = None
+) -> dict[str, int]:
+    query = select(Transaction).where(Transaction.status == "pending")
+    if request:
+        query = query.where(Transaction.id.in_(request.transaction_ids))
+    items = list(db.scalars(query.order_by(Transaction.id)))
     topics = list(db.scalars(select(Category)))
     categories_by_name = {item.name: item for item in topics}
     categories_by_id = {item.id: item for item in topics}
@@ -920,7 +929,7 @@ def classify_review_queue(db: DatabaseSession) -> dict[str, int]:
         item.confidence = result.confidence
         item.classification_source = "codex"
     db.commit()
-    return {"updated": len(inferred), "remaining": len(items)}
+    return {"updated": len(inferred), "processed": len(items)}
 
 
 @app.post("/api/review/approve")

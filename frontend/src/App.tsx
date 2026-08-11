@@ -37,7 +37,9 @@ import TopicsPage from "./Topics";
 import type { Category, CoverageData, DashboardData, TopicProposal, Transaction } from "./types";
 
 type View = "dashboard" | "transactions" | "review" | "topics";
+type CodexProgress = { completed: number; total: number; remainingSeconds: number | null; updatedAt: number };
 const viewPaths: Record<View, string> = { dashboard: "/overview", transactions: "/transactions", topics: "/topics", review: "/review" };
+const codexBatchSize = 20;
 const viewFromPath = (path: string): View => (Object.entries(viewPaths).find(([, value]) => value === path)?.[0] as View | undefined) ?? "dashboard";
 const euro = new Intl.NumberFormat("en-IE", { style: "currency", currency: "EUR" });
 const compactEuro = new Intl.NumberFormat("en-IE", { style: "currency", currency: "EUR", notation: "compact" });
@@ -69,6 +71,7 @@ export default function App() {
   const [busy, setBusy] = useState(true);
   const [monthBusy, setMonthBusy] = useState(false);
   const [notice, setNotice] = useState("");
+  const [codexProgress, setCodexProgress] = useState<CodexProgress | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
 
   const navigate = (nextView: View) => {
@@ -140,15 +143,40 @@ export default function App() {
   };
 
   const classifyPending = async () => {
+    const transactionIds = review.map((item) => item.id);
+    if (!transactionIds.length) return;
     setBusy(true);
+    setNotice("");
+    setCodexProgress({ completed: 0, total: transactionIds.length, remainingSeconds: null, updatedAt: Date.now() });
+    const startedAt = performance.now();
+    let completed = 0;
+    let updated = 0;
     try {
-      const result = await apiRequest<{ updated: number; remaining: number }>("/api/review/classify", { method: "POST" });
-      setNotice(`Codex prepared ${result.updated} proposals · ${result.remaining} await your approval`);
+      for (let index = 0; index < transactionIds.length; index += codexBatchSize) {
+        const batch = transactionIds.slice(index, index + codexBatchSize);
+        const result = await apiRequest<{ updated: number; processed: number }>("/api/review/classify", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ transaction_ids: batch }),
+        });
+        completed += batch.length;
+        updated += result.updated;
+        const elapsedSeconds = (performance.now() - startedAt) / 1000;
+        setCodexProgress({
+          completed,
+          total: transactionIds.length,
+          remainingSeconds: elapsedSeconds / completed * (transactionIds.length - completed),
+          updatedAt: Date.now(),
+        });
+        setReview(await apiRequest<Transaction[]>("/api/review"));
+      }
+      setNotice(`Codex prepared ${updated} proposals · ${transactionIds.length} await your approval`);
       await load(period);
-      setReview(await apiRequest<Transaction[]>("/api/review"));
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "Codex classification failed");
+      const message = error instanceof Error ? error.message : "Codex classification failed";
+      setNotice(`${message} · ${completed} of ${transactionIds.length} completed`);
     } finally {
+      setCodexProgress(null);
       setBusy(false);
     }
   };
@@ -222,10 +250,34 @@ export default function App() {
         </header>
 
         {notice && <div className="notice" onClick={() => setNotice("")}>{notice}<span>×</span></div>}
+        {view === "review" && codexProgress && <CodexProgressBanner progress={codexProgress} />}
         {view === "dashboard" && dashboard?.available_periods.length ? <div className="range-bar"><div><CalendarRange /><strong>Custom spending range</strong></div><input aria-label="Range start" type="date" value={rangeStart} onChange={(event) => setRangeStart(event.target.value)} /><span>to</span><input aria-label="Range end" type="date" value={rangeEnd} onChange={(event) => setRangeEnd(event.target.value)} /><button onClick={applyRange} disabled={busy}>View range</button>{dashboard.is_custom && <button className="clear-range" onClick={clearRange}>Clear</button>}</div> : null}
         {busy && !dashboard ? <EmptyState loading /> : view === "dashboard" ? <Dashboard data={dashboard} coverage={coverage} monthDetail={monthDetail} monthBusy={monthBusy} onMonthSelect={loadMonthDetail} onCloseMonth={() => setMonthDetail(null)} /> : view === "transactions" ? <TransactionList initialItems={transactions} categories={categories} /> : view === "topics" ? <TopicsPage /> : <ReviewQueue items={review} categories={categories} onApprove={approveTransactions} onExclude={excludeReviewTransaction} onClassify={classifyPending} onTopicsChanged={async () => setCategories(await apiRequest<Category[]>("/api/categories"))} busy={busy} />}
       </main>
     </div>
+  );
+}
+
+function CodexProgressBanner({ progress }: { progress: CodexProgress }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const percentage = Math.round(progress.completed / progress.total * 100);
+  const remaining = progress.remainingSeconds === null
+    ? null
+    : Math.max(0, progress.remainingSeconds - (now - progress.updatedAt) / 1000);
+  const eta = remaining === null
+    ? "Estimating time remaining…"
+    : remaining < 60 ? "Less than a minute left" : `About ${Math.ceil(remaining / 60)} min left`;
+  return (
+    <section className="codex-progress" aria-live="polite">
+      <div><span><Sparkles />Codex is reviewing transactions</span><strong>{progress.completed} of {progress.total} · {eta}</strong></div>
+      <div className="codex-progress-track" role="progressbar" aria-label="Codex classification progress" aria-valuemin={0} aria-valuemax={progress.total} aria-valuenow={progress.completed}>
+        <i style={{ width: `${percentage}%` }} />
+      </div>
+    </section>
   );
 }
 

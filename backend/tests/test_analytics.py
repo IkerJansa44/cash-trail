@@ -5,10 +5,12 @@ from decimal import Decimal
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
+from app.categorizer import TransactionSuggestion
 from app.database import Base
 from app.main import (
     ReviewApprovalItem,
     ReviewApprovalRequest,
+    ReviewClassificationRequest,
     TopicCreate,
     TopicMerge,
     TopicUpdate,
@@ -17,6 +19,7 @@ from app.main import (
     _exclusion_reason,
     apply_topic_proposal,
     approve_review_queue,
+    classify_review_queue,
     create_topic,
     dashboard,
     delete_topic,
@@ -424,6 +427,49 @@ def test_approval_applies_edited_proposal_and_updates_dashboard() -> None:
     approved = dashboard(db, start_date=date(2026, 8, 11), end_date=date(2026, 8, 11))
     assert approved["categories"][0]["name"] == "Dining"
     assert approved["total"] == 8.5
+
+
+def test_classifies_only_the_requested_review_batch(monkeypatch) -> None:
+    db = session()
+    topic = Category(name="Dining", color="#E97852")
+    batch = ImportBatch(filename="statement.xls", imported_count=2, duplicate_count=0)
+    db.add_all([topic, batch])
+    db.flush()
+    transactions_to_review = [
+        Transaction(
+            operation_date=date(2026, 8, 11),
+            description=merchant,
+            merchant=merchant,
+            amount=Decimal("-10.00"),
+            currency="EUR",
+            fingerprint=f"batch-{index}",
+            status="pending",
+            classification_source="unclassified",
+            import_batch_id=batch.id,
+        )
+        for index, merchant in enumerate(("CAFE", "BISTRO"))
+    ]
+    db.add_all(transactions_to_review)
+    db.commit()
+    selected = transactions_to_review[1]
+
+    def classify(items, _topics, _hints):
+        assert [item["key"] for item in items] == [str(selected.id)]
+        return {
+            str(selected.id): TransactionSuggestion(
+                "Dinner purchased at a restaurant.", "Dining", (), 0.91
+            )
+        }
+
+    monkeypatch.setattr("app.main.classify_transactions", classify)
+
+    result = classify_review_queue(db, ReviewClassificationRequest(transaction_ids=[selected.id]))
+
+    db.refresh(selected)
+    db.refresh(transactions_to_review[0])
+    assert result == {"updated": 1, "processed": 1}
+    assert selected.proposed_category_id == topic.id
+    assert transactions_to_review[0].proposed_category_id is None
 
 
 def test_edits_primary_and_context_topics_from_transactions() -> None:

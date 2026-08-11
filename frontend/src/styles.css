@@ -52,6 +52,14 @@ select, .import-button { height: 42px; border-radius: 9px; border: 1px solid #db
 .import-button svg { width: 16px; }
 .import-button:disabled { opacity: .65; }
 .notice { margin: -14px 0 22px; padding: 12px 16px; display: flex; justify-content: space-between; border: 1px solid #dfe6ca; border-radius: 9px; background: #f8fce9; color: #505a34; font-size: 13px; cursor: pointer; }
+.codex-progress { margin: -14px 0 22px; padding: 14px 16px; border: 1px solid #dcd7ef; border-radius: 10px; background: #faf9fd; }
+.codex-progress > div:first-child { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+.codex-progress span, .codex-progress strong { display: flex; align-items: center; gap: 7px; font-size: 11px; }
+.codex-progress span { color: #5d4d94; font-weight: 650; }
+.codex-progress span svg { width: 14px; }
+.codex-progress strong { color: #77718b; font-weight: 550; }
+.codex-progress-track { height: 6px; margin-top: 11px; overflow: hidden; border-radius: 4px; background: #e8e4f3; }
+.codex-progress-track i { display: block; height: 100%; border-radius: inherit; background: #7357d9; transition: width .3s ease; }
 .range-bar { margin: -14px 0 18px; padding: 11px 13px; display: flex; align-items: center; gap: 9px; border: 1px solid #e1e0dc; border-radius: 11px; background: white; }
 .range-bar > div { margin-right: auto; display: flex; align-items: center; gap: 8px; font-size: 11px; }
 .range-bar svg { width: 15px; color: #7357d9; }
