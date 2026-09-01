@@ -1,4 +1,5 @@
 import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   ArrowDownRight,
   ArrowUpRight,
@@ -10,6 +11,7 @@ import {
   ChevronLeft,
   ChevronRight,
   CircleHelp,
+  FileSpreadsheet,
   LayoutDashboard,
   ListFilter,
   LoaderCircle,
@@ -35,7 +37,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { apiRequest } from "./api";
+import { apiRequest, uploadRequest } from "./api";
 import { taxonomyRows, topicLabel } from "./topicTaxonomy";
 import TopicsPage from "./Topics";
 import NotificationsPage from "./Notifications";
@@ -43,6 +45,13 @@ import type { Category, CoverageData, DashboardData, TopicProposal, Transaction 
 
 type View = "dashboard" | "transactions" | "review" | "topics" | "notifications";
 type CodexProgress = { completed: number; total: number; remainingSeconds: number | null; updatedAt: number };
+type ImportProgress = {
+  filename: string;
+  phase: "uploading" | "reading" | "reviewing" | "complete";
+  uploadPercentage: number;
+  imported?: number;
+  duplicates?: number;
+};
 type MonthlyChartRow = Record<string, string | number> & { month: string; netTotal: number };
 type SwipeOrigin = { x: number; y: number; lastX: number; startedAt: number; axis: "x" | "y" | null };
 const appBase = import.meta.env.BASE_URL.replace(/\/$/, "");
@@ -87,11 +96,17 @@ export default function App() {
   const [monthBusy, setMonthBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [codexProgress, setCodexProgress] = useState<CodexProgress | null>(null);
+  const [importProgress, setImportProgress] = useState<ImportProgress | null>(null);
+  const [draggedFilename, setDraggedFilename] = useState("");
+  const [isDraggingStatement, setIsDraggingStatement] = useState(false);
   const [swipeOffset, setSwipeOffset] = useState(0);
   const [swipeAnimating, setSwipeAnimating] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const swipeOrigin = useRef<SwipeOrigin | null>(null);
   const swipeTimer = useRef<number | null>(null);
+  const importTimer = useRef<number | null>(null);
+  const dragDepth = useRef(0);
+  const importStatementRef = useRef<(file: File) => Promise<void>>(async () => {});
 
   const navigate = (nextView: View) => {
     if (window.location.pathname !== viewPaths[nextView]) window.history.pushState({}, "", viewPaths[nextView]);
@@ -108,6 +123,7 @@ export default function App() {
 
   useEffect(() => () => {
     if (swipeTimer.current !== null) window.clearTimeout(swipeTimer.current);
+    if (importTimer.current !== null) window.clearTimeout(importTimer.current);
   }, []);
 
   const settleSwipe = () => {
@@ -197,23 +213,98 @@ export default function App() {
 
   useEffect(() => void load(), [view]);
 
-  const importFile = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
+  const importStatement = async (file: File) => {
     const form = new FormData();
     form.append("file", file);
     setBusy(true);
+    setNotice("");
+    setImportProgress({ filename: file.name, phase: "uploading", uploadPercentage: 0 });
     try {
-      const result = await apiRequest<{ imported: number; duplicates: number; pending_review: number }>("/api/imports", { method: "POST", body: form });
+      const result = await uploadRequest<{ imported: number; duplicates: number; pending_review: number }>("/api/imports", form, (uploadPercentage) => {
+        setImportProgress((current) => current ? { ...current, uploadPercentage, phase: current.phase === "uploading" && uploadPercentage === 100 ? "reading" : current.phase } : current);
+        if (uploadPercentage === 100 && importTimer.current === null) {
+          importTimer.current = window.setTimeout(() => {
+            setImportProgress((current) => current && current.phase === "reading" ? { ...current, phase: "reviewing" } : current);
+            importTimer.current = null;
+          }, 700);
+        }
+      });
+      if (importTimer.current !== null) window.clearTimeout(importTimer.current);
+      importTimer.current = null;
+      setImportProgress((current) => current ? { ...current, phase: "complete", uploadPercentage: 100, imported: result.imported, duplicates: result.duplicates } : current);
       setNotice(`${result.imported} transactions imported · ${result.duplicates} duplicates skipped · ${result.pending_review} need review`);
+      const reviewItems = apiRequest<Transaction[]>("/api/review");
       await load("");
+      setReview(await reviewItems);
+      navigate("review");
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Import failed");
     } finally {
-      event.target.value = "";
+      if (importTimer.current !== null) window.clearTimeout(importTimer.current);
+      importTimer.current = null;
+      setImportProgress(null);
       setBusy(false);
     }
   };
+
+  const importFile = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (file) void importStatement(file);
+  };
+
+  const canDropStatement = view === "dashboard" && !busy;
+  importStatementRef.current = importStatement;
+  useEffect(() => {
+    if (!canDropStatement) return;
+    const hasFiles = (event: DragEvent) => Array.from(event.dataTransfer?.types ?? []).includes("Files");
+    const clearDrag = () => {
+      dragDepth.current = 0;
+      setDraggedFilename("");
+      setIsDraggingStatement(false);
+    };
+    const enter = (event: DragEvent) => {
+      if (!hasFiles(event)) return;
+      event.preventDefault();
+      dragDepth.current += 1;
+      const file = event.dataTransfer?.files[0] ?? Array.from(event.dataTransfer?.items ?? []).find((item) => item.kind === "file")?.getAsFile();
+      setDraggedFilename(file?.name ?? "");
+      setIsDraggingStatement(true);
+    };
+    const over = (event: DragEvent) => {
+      if (!hasFiles(event)) return;
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+    };
+    const leave = (event: DragEvent) => {
+      if (!hasFiles(event)) return;
+      event.preventDefault();
+      dragDepth.current = Math.max(0, dragDepth.current - 1);
+      if (!dragDepth.current) clearDrag();
+    };
+    const drop = (event: DragEvent) => {
+      if (!hasFiles(event)) return;
+      event.preventDefault();
+      const files = Array.from(event.dataTransfer?.files ?? []);
+      clearDrag();
+      if (files.length !== 1 || !/\.xlsx?$/i.test(files[0].name)) {
+        setNotice("Drop one .xls or .xlsx bank statement to import it");
+        return;
+      }
+      void importStatementRef.current(files[0]);
+    };
+    window.addEventListener("dragenter", enter);
+    window.addEventListener("dragover", over);
+    window.addEventListener("dragleave", leave);
+    window.addEventListener("drop", drop);
+    return () => {
+      window.removeEventListener("dragenter", enter);
+      window.removeEventListener("dragover", over);
+      window.removeEventListener("dragleave", leave);
+      window.removeEventListener("drop", drop);
+      clearDrag();
+    };
+  }, [canDropStatement]);
 
   const approveTransactions = async (items: { transaction_id: number; description: string; category_id: number }[]) => {
     const result = await apiRequest<{ approved: number }>("/api/review/approve", {
@@ -340,8 +431,44 @@ export default function App() {
         {view === "notifications" ? <NotificationsPage /> : busy && !dashboard ? <EmptyState loading /> : view === "dashboard" ? <Dashboard data={dashboard} topics={categories} coverage={coverage} monthDetail={monthDetail} monthBusy={monthBusy} onMonthSelect={loadMonthDetail} onCloseMonth={() => setMonthDetail(null)} /> : view === "transactions" ? <TransactionList initialItems={transactions} categories={categories} /> : view === "topics" ? <TopicsPage /> : <ReviewQueue items={review} categories={categories} onApprove={approveTransactions} onExclude={excludeReviewTransaction} onClassify={classifyPending} onTopicsChanged={async () => setCategories(await apiRequest<Category[]>("/api/categories"))} busy={busy} />}
         </div>
       </main>
+      {isDraggingStatement && <OverviewDropOverlay filename={draggedFilename} />}
+      {importProgress && <ImportProgressDialog progress={importProgress} />}
     </div>
   );
+}
+
+function OverviewDropOverlay({ filename }: { filename: string }) {
+  return <div className="overview-drop-backdrop" role="status" aria-live="polite"><div className="overview-drop-area"><div className="overview-drop-content"><div className="overview-drop-icon"><FileSpreadsheet />{filename && <span>{filename}</span>}</div><h2>Drop your bank statement</h2><p>Release it anywhere to start the import.</p><small>Supports .xls and .xlsx</small></div></div></div>;
+}
+
+function ImportProgressDialog({ progress }: { progress: ImportProgress }) {
+  const uploaded = progress.phase !== "uploading";
+  const reviewed = progress.phase === "complete";
+  const reviewing = progress.phase === "reviewing";
+  const progressWidth = progress.phase === "uploading" ? `${progress.uploadPercentage}%` : undefined;
+  return (
+    <div className="import-progress-backdrop" role="presentation">
+      <section className="import-progress-dialog" role="dialog" aria-modal="true" aria-labelledby="import-progress-title" aria-describedby="import-progress-note">
+        <div className="import-progress-heading">
+          <div className="import-file-icon"><FileSpreadsheet /></div>
+          <div><h2 id="import-progress-title">{reviewed ? "Review ready" : "Preparing your review"}</h2><p>{progress.filename}</p></div>
+        </div>
+        <div className={`import-progress-track ${uploaded && !reviewed ? "indeterminate" : ""}`} role="progressbar" aria-label="Statement import progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={reviewed ? 100 : progress.phase === "uploading" ? progress.uploadPercentage : undefined}>
+          <i style={progressWidth ? { width: progressWidth } : undefined} />
+        </div>
+        <div className="import-progress-stages">
+          <ImportStage state={uploaded ? "done" : "active"} label="Statement uploaded" detail={uploaded ? "Complete" : `${progress.uploadPercentage}%`} />
+          <ImportStage state={reviewed || reviewing ? "done" : uploaded ? "active" : "pending"} label="Transactions found" detail={reviewed ? `${progress.imported} new` : undefined} />
+          <ImportStage state={reviewed ? "done" : reviewing ? "active" : "pending"} label="Codex is preparing suggestions" detail={reviewed ? "Complete" : reviewing ? "Usually under a minute" : undefined} sparkle />
+        </div>
+        <p className="import-progress-note" id="import-progress-note">{reviewed ? `${progress.imported} transactions imported · ${progress.duplicates} duplicates skipped` : "Keep this page open. Your review queue will appear automatically."}</p>
+      </section>
+    </div>
+  );
+}
+
+function ImportStage({ state, label, detail, sparkle = false }: { state: "done" | "active" | "pending"; label: string; detail?: string; sparkle?: boolean }) {
+  return <div className={`import-progress-stage ${state}`}><span>{state === "done" ? <Check /> : sparkle ? <Sparkles /> : <LoaderCircle />}</span><strong>{label}</strong><small>{detail}</small></div>;
 }
 
 function CodexProgressBanner({ progress }: { progress: CodexProgress }) {
@@ -983,7 +1110,10 @@ function ReviewQueue({ items, categories, onApprove, onExclude, onClassify, onTo
 }
 
 function ExclusionDialog({ item, busy, onCancel, onConfirm }: { item: Transaction; busy: boolean; onCancel: () => void; onConfirm: () => void }) {
-  return <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onCancel(); }}><section className="exclusion-dialog" role="dialog" aria-modal="true" aria-labelledby="exclusion-title"><div className="exclusion-dialog-icon"><Ban /></div><p className="eyebrow">EXCLUDE TRANSACTION</p><h2 id="exclusion-title">Remove from spending analytics?</h2><p><strong>{item.merchant}</strong> will no longer appear in totals, charts, or activity. You can restore it later from Transactions.</p><div className="exclusion-dialog-actions"><button onClick={onCancel} disabled={busy}>Keep transaction</button><button className="confirm-exclusion" onClick={onConfirm} disabled={busy}>{busy ? <LoaderCircle className="spinner" /> : <Ban />}Exclude</button></div></section></div>;
+  return createPortal(
+    <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onCancel(); }}><section className="exclusion-dialog" role="dialog" aria-modal="true" aria-labelledby="exclusion-title"><div className="exclusion-dialog-icon"><Ban /></div><p className="eyebrow">EXCLUDE TRANSACTION</p><h2 id="exclusion-title">Remove from spending analytics?</h2><p><strong>{item.merchant}</strong> will no longer appear in totals, charts, or activity. You can restore it later from Transactions.</p><div className="exclusion-dialog-actions"><button onClick={onCancel} disabled={busy}>Keep transaction</button><button className="confirm-exclusion" onClick={onConfirm} disabled={busy}>{busy ? <LoaderCircle className="spinner" /> : <Ban />}Exclude</button></div></section></div>,
+    document.body,
+  );
 }
 
 function InlineTopicProposal({ proposal, busy, onApply, onReject }: { proposal: TopicProposal; busy: boolean; onApply: () => void; onReject: () => void }) {
