@@ -7,9 +7,11 @@ account transfers, and learns merchant topic hints from
 corrections. Other positive credits are reviewed and subtract from net spending in their approved
 topic and transaction date; category or period totals may therefore be negative.
 It also tracks the date coverage of every statement, warns about gaps between imports, and supports
-inclusive custom date ranges for spending totals and category breakdowns.
-The overview has no global month selector: clicking a column in the monthly spending chart opens
-that month's totals, comparison, category breakdown, and complete transaction list inline.
+inclusive custom date ranges for spending totals and topic breakdowns.
+The overview switches its monthly chart and spending breakdown between topics and labels. The label
+view groups transactions without a label as "Unlabeled," so both views cover the same spending.
+Selecting a chart column or month label shows that month's spending in the existing pie breakdown
+and recent transactions list. The main chart and summary cards continue to show the overview range.
 
 When a bank export includes queried `from` and `to` dates, those are used as the authoritative
 coverage range. If they are omitted, Cash Trail falls back to the earliest and latest transaction

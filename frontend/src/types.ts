@@ -67,6 +67,7 @@ export type DashboardData = {
   pending_total: number;
   categories: { name: string; value: number; color: string }[];
   monthly: Record<string, string | number>[];
+  monthly_labels: { month: string; labels: Record<string, number>; unlabeled: number }[];
   recent: Transaction[];
   transactions: Transaction[];
 };

@@ -491,10 +491,17 @@ def dashboard(
             roots[item.category_id].name if item.category_id else "Pending review"
         ] += -item.amount
     monthly: dict[str, dict[str, Decimal]] = defaultdict(lambda: defaultdict(Decimal))
+    monthly_labels: dict[str, dict[str, Decimal]] = defaultdict(lambda: defaultdict(Decimal))
+    monthly_unlabeled: dict[str, Decimal] = defaultdict(Decimal)
     for item in selected if custom_range else transactions:
         key = item.operation_date.strftime("%Y-%m")
         category = roots[item.category_id].name if item.category_id else "Pending review"
         monthly[key][category] += -item.amount
+        if item.transaction_label:
+            monthly_labels[key][item.transaction_label] += -item.amount
+        else:
+            monthly_unlabeled[key] += -item.amount
+    months = sorted(monthly) if custom_range else sorted(monthly)[-12:]
     pending_total = (
         db.scalar(
             select(func.count()).select_from(Transaction).where(Transaction.status == "pending")
@@ -522,10 +529,16 @@ def dashboard(
             for name, value in sorted(by_category.items(), key=lambda pair: pair[1], reverse=True)
         ],
         "monthly": [
-            {"month": key, **{name: float(value) for name, value in values.items()}}
-            for key, values in (
-                sorted(monthly.items()) if custom_range else sorted(monthly.items())[-12:]
-            )
+            {"month": key, **{name: float(value) for name, value in monthly[key].items()}}
+            for key in months
+        ],
+        "monthly_labels": [
+            {
+                "month": key,
+                "labels": {name: float(value) for name, value in monthly_labels[key].items()},
+                "unlabeled": float(monthly_unlabeled[key]),
+            }
+            for key in months
         ],
         "recent": [_serialize_transaction(item, categories_by_id) for item in selected[:8]],
         "transactions": [_serialize_transaction(item, categories_by_id) for item in selected],

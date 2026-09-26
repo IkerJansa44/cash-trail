@@ -154,6 +154,55 @@ def test_calculates_spending_for_inclusive_custom_range() -> None:
     assert result["is_custom"] is True
     assert len(result["transactions"]) == 1
     assert result["monthly"] == [{"month": "2026-08", "Dining": 25.0}]
+    assert result["monthly_labels"] == [{"month": "2026-08", "labels": {}, "unlabeled": 25.0}]
+
+
+def test_dashboard_groups_monthly_spend_by_label_on_topic_months() -> None:
+    db = session()
+    travel = Category(name="Travel", color="#3AA6B9")
+    batch = ImportBatch(filename="statement.xls", imported_count=5, duplicate_count=0)
+    db.add_all([travel, batch])
+    db.flush()
+    for index, (operation_date, amount, label) in enumerate(
+        [
+            (date(2026, 7, 2), "-20.00", "Trip"),
+            (date(2026, 7, 3), "-5.00", None),
+            (date(2026, 8, 11), "-10.00", "Trip"),
+            (date(2026, 8, 11), "4.00", "Trip"),
+            (date(2026, 8, 12), "-7.00", "month"),
+        ]
+    ):
+        db.add(
+            Transaction(
+                operation_date=operation_date,
+                description=f"TRAVEL {index}",
+                merchant="TRAVEL MERCHANT",
+                amount=Decimal(amount),
+                currency="EUR",
+                fingerprint=f"monthly-label-{index}",
+                status="confirmed",
+                classification_source="approved",
+                category_id=travel.id,
+                transaction_label=label,
+                import_batch_id=batch.id,
+            )
+        )
+    db.commit()
+
+    result = dashboard(db, year=2026, month=8)
+
+    assert result["monthly"] == [
+        {"month": "2026-07", "Travel": 25.0},
+        {"month": "2026-08", "Travel": 13.0},
+    ]
+    assert result["monthly_labels"] == [
+        {"month": "2026-07", "labels": {"Trip": 20.0}, "unlabeled": 5.0},
+        {"month": "2026-08", "labels": {"Trip": 6.0, "month": 7.0}, "unlabeled": 0.0},
+    ]
+    for topic, labels in zip(result["monthly"], result["monthly_labels"], strict=True):
+        assert sum(value for name, value in topic.items() if name != "month") == (
+            sum(labels["labels"].values()) + labels["unlabeled"]
+        )
 
 
 def test_refund_can_create_a_negative_net_topic_total() -> None:

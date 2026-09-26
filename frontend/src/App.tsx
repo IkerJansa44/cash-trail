@@ -37,6 +37,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import type { XAxisTickContentProps } from "recharts";
 import { apiRequest, uploadRequest } from "./api";
 import { taxonomyRows, topicLabel } from "./topicTaxonomy";
 import TopicsPage from "./Topics";
@@ -84,7 +85,7 @@ const today = () => {
 export default function App() {
   const [view, setView] = useState<View>(() => viewFromPath(window.location.pathname));
   const [dashboard, setDashboard] = useState<DashboardData | null>(null);
-  const [monthDetail, setMonthDetail] = useState<DashboardData | null>(null);
+  const [selectedMonthData, setSelectedMonthData] = useState<DashboardData | null>(null);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [review, setReview] = useState<Transaction[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
@@ -104,6 +105,7 @@ export default function App() {
   const fileInput = useRef<HTMLInputElement>(null);
   const swipeOrigin = useRef<SwipeOrigin | null>(null);
   const swipeTimer = useRef<number | null>(null);
+  const monthRequestId = useRef(0);
   const importTimer = useRef<number | null>(null);
   const dragDepth = useRef(0);
   const importStatementRef = useRef<(file: File) => Promise<void>>(async () => {});
@@ -187,6 +189,8 @@ export default function App() {
   };
 
   const load = useCallback(async (selectedPeriod = period, customStart = "", customEnd = "") => {
+    monthRequestId.current += 1;
+    setMonthBusy(false);
     setBusy(true);
     try {
       const query = customStart && customEnd
@@ -198,7 +202,7 @@ export default function App() {
         apiRequest<CoverageData>("/api/coverage"),
       ]);
       setDashboard(dashboardData);
-      setMonthDetail(null);
+      setSelectedMonthData(null);
       setPeriod(dashboardData.period);
       setCategories(categoryData);
       setCoverage(coverageData);
@@ -384,7 +388,8 @@ export default function App() {
     void load(period);
   };
 
-  const loadMonthDetail = async (month: string) => {
+  const selectMonth = async (month: string) => {
+    const requestId = ++monthRequestId.current;
     setMonthBusy(true);
     try {
       const params = new URLSearchParams({ year: month.slice(0, 4), month: String(Number(month.slice(5))) });
@@ -393,12 +398,19 @@ export default function App() {
         params.set("start_date", dashboard.range_start > `${month}-01` ? dashboard.range_start : `${month}-01`);
         params.set("end_date", dashboard.range_end < monthEnd ? dashboard.range_end : monthEnd);
       }
-      setMonthDetail(await apiRequest<DashboardData>(`/api/dashboard?${params}`));
+      const selected = await apiRequest<DashboardData>(`/api/dashboard?${params}`);
+      if (requestId === monthRequestId.current) setSelectedMonthData(selected);
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "Unable to load month details");
+      if (requestId === monthRequestId.current) setNotice(error instanceof Error ? error.message : "Unable to load the selected month");
     } finally {
-      setMonthBusy(false);
+      if (requestId === monthRequestId.current) setMonthBusy(false);
     }
+  };
+
+  const clearSelectedMonth = () => {
+    monthRequestId.current += 1;
+    setSelectedMonthData(null);
+    setMonthBusy(false);
   };
 
   return (
@@ -428,7 +440,7 @@ export default function App() {
         {notice && <div className="notice" onClick={() => setNotice("")}>{notice}<span>×</span></div>}
         {view === "review" && codexProgress && <CodexProgressBanner progress={codexProgress} />}
         {view === "dashboard" && dashboard?.available_periods.length ? <div className="range-bar"><div><CalendarRange /><strong>Custom spending range</strong></div><DateRangePicker start={rangeStart} end={rangeEnd} initialMonth={dashboard.period} busy={busy} onChange={(start, end) => { setRangeStart(start); setRangeEnd(end); }} onApply={applyRange} />{dashboard.is_custom && <button className="clear-range" onClick={clearRange}>Clear</button>}</div> : null}
-        {view === "notifications" ? <NotificationsPage /> : busy && !dashboard ? <EmptyState loading /> : view === "dashboard" ? <Dashboard data={dashboard} topics={categories} coverage={coverage} monthDetail={monthDetail} monthBusy={monthBusy} onMonthSelect={loadMonthDetail} onCloseMonth={() => setMonthDetail(null)} /> : view === "transactions" ? <TransactionList initialItems={transactions} categories={categories} /> : view === "topics" ? <TopicsPage /> : <ReviewQueue items={review} categories={categories} onApprove={approveTransactions} onExclude={excludeReviewTransaction} onClassify={classifyPending} onTopicsChanged={async () => setCategories(await apiRequest<Category[]>("/api/categories"))} busy={busy} />}
+        {view === "notifications" ? <NotificationsPage /> : busy && !dashboard ? <EmptyState loading /> : view === "dashboard" ? <Dashboard data={dashboard} topics={categories} coverage={coverage} selectedMonthData={selectedMonthData} monthBusy={monthBusy} onMonthSelect={selectMonth} onClearMonth={clearSelectedMonth} /> : view === "transactions" ? <TransactionList initialItems={transactions} categories={categories} /> : view === "topics" ? <TopicsPage /> : <ReviewQueue items={review} categories={categories} onApprove={approveTransactions} onExclude={excludeReviewTransaction} onClassify={classifyPending} onTopicsChanged={async () => setCategories(await apiRequest<Category[]>("/api/categories"))} busy={busy} />}
         </div>
       </main>
       {isDraggingStatement && <OverviewDropOverlay filename={draggedFilename} />}
@@ -563,10 +575,37 @@ function DateRangePicker({ start, end, initialMonth, busy, onChange, onApply }: 
   </div>;
 }
 
-function Dashboard({ data, topics, coverage, monthDetail, monthBusy, onMonthSelect, onCloseMonth }: { data: DashboardData | null; topics: Category[]; coverage: CoverageData | null; monthDetail: DashboardData | null; monthBusy: boolean; onMonthSelect: (month: string) => Promise<void>; onCloseMonth: () => void }) {
-  const [selectedCategories, setSelectedCategories] = useState<Set<string>>(new Set());
+type MonthlySeries = { key: string; name: string; color: string };
+type BreakdownMode = "topic" | "label";
+type BreakdownItem = { key: string; name: string; value: number; color: string };
+const unlabeledKey = "unlabeled";
+
+function labelColor(name: string): string {
+  let hue = 0;
+  for (const character of name) hue = (hue * 31 + character.charCodeAt(0)) % 360;
+  return `hsl(${hue} 55% 44%)`;
+}
+
+function monthlyAxisDomain(charts: { rows: MonthlyChartRow[]; series: MonthlySeries[] }[]): [number, number] {
+  const bounds = charts.flatMap(({ rows, series }) => rows.map((row) => series.reduce(([negative, positive], item) => {
+    const value = Number(row[item.key] ?? 0);
+    return [negative + Math.min(value, 0), positive + Math.max(value, 0)] as [number, number];
+  }, [0, 0] as [number, number])));
+  const minimum = Math.min(0, ...bounds.map(([negative]) => negative));
+  const maximum = Math.max(0, ...bounds.map(([, positive]) => positive));
+  return minimum === maximum ? [-1, 1] : [minimum, maximum];
+}
+
+function BreakdownToggle({ mode, onChange }: { mode: BreakdownMode; onChange: (mode: BreakdownMode) => void }) {
+  return <div className="breakdown-toggle" role="group" aria-label="Group spending by">{(["topic", "label"] as const).map((option) => <button key={option} type="button" aria-pressed={mode === option} onClick={() => onChange(option)}>{option === "topic" ? "Topics" : "Labels"}</button>)}</div>;
+}
+
+function Dashboard({ data, topics, coverage, selectedMonthData, monthBusy, onMonthSelect, onClearMonth }: { data: DashboardData | null; topics: Category[]; coverage: CoverageData | null; selectedMonthData: DashboardData | null; monthBusy: boolean; onMonthSelect: (month: string) => Promise<void>; onClearMonth: () => void }) {
+  const [breakdownMode, setBreakdownMode] = useState<BreakdownMode>("topic");
+  const [selectedBreakdown, setSelectedBreakdown] = useState<Set<string>>(new Set());
   const [pieTooltipOpen, setPieTooltipOpen] = useState(false);
-  const categoryNames = useMemo(() => {
+  const breakdownData = selectedMonthData ?? data;
+  const topicNames = useMemo(() => {
     const totals = new Map<string, number>();
     for (const row of data?.monthly ?? []) {
       for (const [name, value] of Object.entries(row)) {
@@ -575,7 +614,7 @@ function Dashboard({ data, topics, coverage, monthDetail, monthBusy, onMonthSele
     }
     return [...totals].sort((left, right) => right[1] - left[1]).map(([name]) => name);
   }, [data]);
-  const monthlyData = useMemo<MonthlyChartRow[]>(() => (data?.monthly ?? []).map((row) => ({
+  const topicRows = useMemo<MonthlyChartRow[]>(() => (data?.monthly ?? []).map((row) => ({
     ...row,
     month: String(row.month),
     netTotal: Number(Object.entries(row).reduce(
@@ -583,33 +622,59 @@ function Dashboard({ data, topics, coverage, monthDetail, monthBusy, onMonthSele
       0,
     ).toFixed(2)),
   })), [data]);
-  const colors = Object.fromEntries((data?.categories ?? []).map((item) => [item.name, item.color]));
+  const labelNames = useMemo(() => [...new Set((data?.monthly_labels ?? []).flatMap((row) => Object.keys(row.labels)))].sort(), [data]);
+  const namedLabelSeries = labelNames.map((name, index) => ({ key: `label-${index}`, name, color: labelColor(name) }));
+  const labelSeries = [{ key: unlabeledKey, name: "Unlabeled", color: "#B2B8C5" }, ...namedLabelSeries];
+  const labelRows: MonthlyChartRow[] = (data?.monthly_labels ?? []).map((row) => ({
+    month: row.month,
+    netTotal: topicRows.find((topic) => topic.month === row.month)?.netTotal ?? 0,
+    [unlabeledKey]: row.unlabeled,
+    ...Object.fromEntries(namedLabelSeries.map(({ key, name }) => [key, row.labels[name] ?? 0])),
+  }));
+  const topicColors = Object.fromEntries((data?.categories ?? []).map((item) => [item.name, item.color]));
+  const topicSeries = topicNames.map((name) => ({ key: name, name, color: topicColors[name] || "#B2B8C5" }));
+  const yDomain = monthlyAxisDomain([{ rows: topicRows, series: topicSeries }, { rows: labelRows, series: labelSeries }]);
+  const labelBreakdown = useMemo<BreakdownItem[]>(() => {
+    const totals = new Map<string, number>();
+    for (const item of breakdownData?.transactions ?? []) {
+      const key = item.transaction_label ? `label:${item.transaction_label}` : unlabeledKey;
+      totals.set(key, (totals.get(key) ?? 0) - item.amount);
+    }
+    return [...totals].map(([key, value]) => ({ key, name: key === unlabeledKey ? "Unlabeled" : key.slice(6), value: Number(value.toFixed(2)), color: key === unlabeledKey ? "#B2B8C5" : labelColor(key.slice(6)) })).sort((left, right) => right.value - left.value);
+  }, [breakdownData]);
+  const topicBreakdown = (breakdownData?.categories ?? []).map((item) => ({ ...item, key: item.name }));
+  const breakdown = breakdownMode === "topic" ? topicBreakdown : labelBreakdown;
+  const selectedTotal = breakdown.reduce((total, item) => selectedBreakdown.has(item.key) ? total + item.value : total, 0);
   const topicsById = new Map(topics.map((topic) => [topic.id, topic]));
-  const selectedTotal = (data?.categories ?? []).reduce((total, item) => selectedCategories.has(item.name) ? total + item.value : total, 0);
-  const recentTransactions = (data?.transactions ?? []).filter((item) => {
-    if (!selectedCategories.size) return true;
-    if (!item.category_id) return selectedCategories.has("Pending review");
+  const recentTransactions = (breakdownData?.transactions ?? []).filter((item) => {
+    if (!selectedBreakdown.size) return true;
+    if (breakdownMode === "label") return selectedBreakdown.has(item.transaction_label ? `label:${item.transaction_label}` : unlabeledKey);
+    if (!item.category_id) return selectedBreakdown.has("Pending review");
     let topic = topicsById.get(item.category_id);
     while (topic?.parent_id) topic = topicsById.get(topic.parent_id);
-    return Boolean(topic && selectedCategories.has(topic.name));
+    return Boolean(topic && selectedBreakdown.has(topic.name));
   });
-  const toggleCategory = (name: string) => setSelectedCategories((current) => {
-    const next = new Set(current);
-    if (next.has(name)) next.delete(name);
-    else next.add(name);
-    return next;
-  });
-  const clearCategorySelection = useCallback(() => {
-    setSelectedCategories(new Set());
+  const clearBreakdownSelection = useCallback(() => {
+    setSelectedBreakdown((current) => current.size ? new Set() : current);
     setPieTooltipOpen(false);
   }, []);
-  useEffect(clearCategorySelection, [data?.range_start, data?.range_end, clearCategorySelection]);
+  const changeBreakdownMode = (mode: BreakdownMode) => {
+    setBreakdownMode(mode);
+    clearBreakdownSelection();
+  };
+  const toggleBreakdown = (key: string) => setSelectedBreakdown((current) => {
+    const next = new Set(current);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    return next;
+  });
+  useEffect(clearBreakdownSelection, [breakdownData, clearBreakdownSelection]);
   useEffect(() => {
     const clearSelection = (event: KeyboardEvent) => {
-      if (event.key === "Escape") clearCategorySelection();
+      if (event.key === "Escape") clearBreakdownSelection();
     };
     const clearOutsideSelection = (event: MouseEvent) => {
-      if (!(event.target instanceof Element) || !event.target.closest(".category-list button, .donut .recharts-sector")) clearCategorySelection();
+      if (!(event.target instanceof Element) || !event.target.closest(".category-list button, .donut .recharts-sector, .bar-chart")) clearBreakdownSelection();
     };
     window.addEventListener("keydown", clearSelection);
     window.addEventListener("mousedown", clearOutsideSelection);
@@ -617,10 +682,13 @@ function Dashboard({ data, topics, coverage, monthDetail, monthBusy, onMonthSele
       window.removeEventListener("keydown", clearSelection);
       window.removeEventListener("mousedown", clearOutsideSelection);
     };
-  }, [clearCategorySelection]);
+  }, [clearBreakdownSelection]);
   if (!data || !data.available_periods.length) return <EmptyState />;
-  const positiveCategories = data.categories.filter((item) => item.value > 0);
   const activeRange = rangeLabel(data.range_start, data.range_end);
+  const breakdownRange = rangeLabel(breakdownData?.range_start ?? data.range_start, breakdownData?.range_end ?? data.range_end);
+  const positiveBreakdown = breakdown.filter((item) => item.value > 0);
+  const chartRows = breakdownMode === "topic" ? topicRows : labelRows;
+  const chartSeries = breakdownMode === "topic" ? topicSeries : labelSeries;
   return (
     <div className="dashboard">
       <section className="kpi-grid">
@@ -630,60 +698,61 @@ function Dashboard({ data, topics, coverage, monthDetail, monthBusy, onMonthSele
         <Kpi label="Needs review" value={String(data.pending)} detail={data.pending ? "Help improve future imports" : "Everything is categorized"} icon={data.pending ? <CircleHelp /> : <Check />} tone={data.pending ? "warning" : "good"} />
       </section>
 
-      <section className="panel chart-panel">
-        <div className="panel-heading"><div><p className="eyebrow">SPENDING HISTORY</p><PanelTitle title="Net monthly spend by category" range={activeRange} /></div><span>{monthBusy ? "Loading month…" : "Click a month for details"}</span></div>
-        <div className="bar-chart">
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={monthlyData} margin={{ top: 20, right: 8, left: -12, bottom: 0 }} stackOffset="sign" barGap={-22} onClick={(event) => { if (event?.activeLabel) void onMonthSelect(String(event.activeLabel)); }}>
-              <CartesianGrid vertical={false} stroke="#e8e7e3" />
-              <XAxis dataKey="month" tickFormatter={shortMonth} axisLine={false} tickLine={false} tick={{ fill: "#8b8f99", fontSize: 12 }} />
-              <YAxis tickFormatter={(value) => compactEuro.format(value)} axisLine={false} tickLine={false} tick={{ fill: "#8b8f99", fontSize: 12 }} />
-              <ReferenceLine y={0} stroke="#a5a7aa" strokeWidth={1.2} />
-              <Tooltip
-                cursor={{ fill: "#f6f5f2" }}
-                content={({ active, label }) => {
-                  const month = monthlyData.find((row) => row.month === label);
-                  if (!active || !month) return null;
-                  return <div className="monthly-tooltip"><strong>{monthLabel(String(label))}</strong><ul>{categoryNames.filter((name) => name in month).map((name) => <li key={name}><span><i style={{ background: colors[name] || "#B2B8C5" }} />{name}</span><b>{euro.format(Number(month[name]))}</b></li>)}</ul><footer><span>Net total</span><b>{euro.format(month.netTotal)}</b></footer></div>;
-                }}
-              />
-              {categoryNames.map((name) => <Bar key={name} dataKey={name} stackId="topics" barSize={34} fill={colors[name] || "#B2B8C5"} fillOpacity={0.52} />)}
-              <Bar dataKey="netTotal" barSize={10} radius={[3, 3, 3, 3]}>
-                {monthlyData.map((row) => <Cell key={String(row.month)} fill={row.netTotal < 0 ? "#9E395F" : "#29243A"} />)}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-        <div className="legend">{categoryNames.map((name) => <span key={name}><i style={{ background: colors[name] || "#B2B8C5" }} />{name}</span>)}<span className="net-total-legend"><i />Net total</span></div>
-        <div className="chart-note">Wide stacks show topic totals · Narrow dark columns show net monthly spend</div>
-      </section>
-
-      {monthDetail && <MonthDetail data={monthDetail} onClose={onCloseMonth} />}
+      <MonthlySpendChart title={`Net monthly spend by ${breakdownMode}`} range={activeRange} rows={chartRows} series={chartSeries} yDomain={yDomain} mode={breakdownMode} onModeChange={changeBreakdownMode} monthBusy={monthBusy} selectedMonth={selectedMonthData?.period ?? null} onMonthSelect={onMonthSelect} note={`Wide stacks show ${breakdownMode} totals · Narrow dark columns show net monthly spend`} />
 
       <div className="lower-grid">
         <section className="panel category-panel">
-          <div className="panel-heading"><div><p className="eyebrow">BREAKDOWN</p><PanelTitle title="Net by category" range={activeRange} /></div></div>
+          <div className="panel-heading"><div><p className="eyebrow">BREAKDOWN</p><PanelTitle title={`Net by ${breakdownMode}`} range={breakdownRange} /></div><div className="breakdown-actions">{selectedMonthData && <button className="clear-month" aria-label="Show full overview range" onClick={onClearMonth}>All months</button>}<BreakdownToggle mode={breakdownMode} onChange={changeBreakdownMode} /></div></div>
           <div className="category-content">
-            <div className="donut"><ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={positiveCategories} dataKey="value" innerRadius={60} outerRadius={82} paddingAngle={2}>{positiveCategories.map((item) => <Cell key={item.name} fill={item.color} opacity={!selectedCategories.size || selectedCategories.has(item.name) ? 1 : 0.35} stroke={selectedCategories.has(item.name) ? "#202329" : "#fff"} strokeWidth={selectedCategories.has(item.name) ? 2 : 1} style={{ cursor: "pointer" }} onMouseEnter={() => setPieTooltipOpen(true)} onMouseLeave={() => setPieTooltipOpen(false)} onClick={() => {
-              const wasSelected = selectedCategories.has(item.name);
-              toggleCategory(item.name);
+            <div className="donut"><ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={positiveBreakdown} dataKey="value" innerRadius={60} outerRadius={82} paddingAngle={2}>{positiveBreakdown.map((item) => <Cell key={item.key} fill={item.color} opacity={!selectedBreakdown.size || selectedBreakdown.has(item.key) ? 1 : 0.35} stroke={selectedBreakdown.has(item.key) ? "#202329" : "#fff"} strokeWidth={selectedBreakdown.has(item.key) ? 2 : 1} style={{ cursor: "pointer" }} onMouseEnter={() => setPieTooltipOpen(true)} onMouseLeave={() => setPieTooltipOpen(false)} onClick={() => {
+              const wasSelected = selectedBreakdown.has(item.key);
+              toggleBreakdown(item.key);
               setPieTooltipOpen(!wasSelected);
             }} />)}</Pie><Tooltip active={pieTooltipOpen ? undefined : false} wrapperStyle={{ zIndex: 1 }} content={({ active, payload }) => {
-              const item = payload?.[0]?.payload as DashboardData["categories"][number] | undefined;
+              const item = payload?.[0]?.payload as BreakdownItem | undefined;
               return active && item ? <div className="category-tooltip"><span><i style={{ background: item.color }} />{item.name}</span><strong>{euro.format(item.value)}</strong></div> : null;
-            }} /></PieChart></ResponsiveContainer><div aria-live="polite"><strong>{euro.format(selectedCategories.size ? selectedTotal : data.total)}</strong><span>{selectedCategories.size ? "Selected total" : "Net total"}</span></div></div>
-            <div className="category-list">{data.categories.map((item) => <button className={selectedCategories.has(item.name) ? "selected" : ""} key={item.name} aria-pressed={selectedCategories.has(item.name)} onClick={() => {
-              setPieTooltipOpen(false);
-              toggleCategory(item.name);
-            }}><span><i style={{ background: item.color }} />{item.name}</span><strong className={item.value < 0 ? "net-credit" : ""}>{euro.format(item.value)}</strong></button>)}</div>
+            }} /></PieChart></ResponsiveContainer><div aria-live="polite"><strong>{euro.format(selectedBreakdown.size ? selectedTotal : breakdownData?.total ?? data.total)}</strong><span>{selectedBreakdown.size ? "Selected total" : "Net total"}</span></div></div>
+            <div className="category-list">{breakdown.map((item) => <button className={selectedBreakdown.has(item.key) ? "selected" : ""} key={item.key} aria-pressed={selectedBreakdown.has(item.key)} onClick={() => { setPieTooltipOpen(false); toggleBreakdown(item.key); }}><span><i style={{ background: item.color }} />{item.name}</span><strong className={item.value < 0 ? "net-credit" : ""}>{euro.format(item.value)}</strong></button>)}</div>
           </div>
         </section>
-        <section className="panel recent-panel"><div className="panel-heading"><div><p className="eyebrow">ACTIVITY</p><PanelTitle title="Recent transactions" range={activeRange} /></div>{selectedCategories.size > 0 && <button className="clear-category-filter" onClick={clearCategorySelection}>Clear filter</button>}</div>{recentTransactions.length ? <TransactionRows items={recentTransactions} /> : <div className="no-recent-transactions"><Search /><strong>No recent transactions</strong><span>{selectedCategories.size ? "Try selecting another category." : "There are no transactions in this period."}</span></div>}</section>
+        <section className="panel recent-panel"><div className="panel-heading"><div><p className="eyebrow">ACTIVITY</p><PanelTitle title="Recent transactions" range={breakdownRange} /></div>{selectedBreakdown.size > 0 && <button className="clear-category-filter" onClick={clearBreakdownSelection}>Clear filter</button>}</div>{recentTransactions.length ? <TransactionRows items={recentTransactions} /> : <div className="no-recent-transactions"><Search /><strong>No recent transactions</strong><span>{selectedBreakdown.size ? `Try selecting another ${breakdownMode}.` : "There are no transactions in this period."}</span></div>}</section>
       </div>
-
       <CoverageTimeline coverage={coverage} rangeStart={data.is_custom ? data.range_start : undefined} rangeEnd={data.is_custom ? data.range_end : undefined} />
     </div>
   );
+}
+
+function MonthlySpendChart({ title, range, rows, series, yDomain, mode, onModeChange, monthBusy, selectedMonth, onMonthSelect, note }: { title: string; range: string; rows: MonthlyChartRow[]; series: MonthlySeries[]; yDomain: [number, number]; mode: BreakdownMode; onModeChange: (mode: BreakdownMode) => void; monthBusy: boolean; selectedMonth: string | null; onMonthSelect: (month: string) => Promise<void>; note: string }) {
+  const renderMonthTick = ({ x, y, payload }: XAxisTickContentProps) => {
+    const month = String(payload.value);
+    const select = () => void onMonthSelect(month);
+    return <g className="month-axis-tick" role="button" tabIndex={0} aria-label={`Show ${monthLabel(month)} breakdown`} aria-pressed={selectedMonth === month} onClick={select} onKeyDown={(event) => {
+      if (event.key === "Enter" || event.key === " ") { event.preventDefault(); select(); }
+    }}>
+      <rect x={Number(x) - 22} y={Number(y) - 8} width={44} height={24} fill="transparent" />
+      <text x={x} y={Number(y) + 4} textAnchor="middle" fill={selectedMonth === month ? "#29243A" : "#8b8f99"} fontSize={12} fontWeight={selectedMonth === month ? 700 : 400}>{shortMonth(month)}</text>
+    </g>;
+  };
+  return <section className="panel chart-panel">
+    <div className="panel-heading"><div><p className="eyebrow">SPENDING HISTORY</p><PanelTitle title={title} range={range} /></div><div className="chart-heading-actions"><span>{monthBusy ? "Loading month…" : "Select a month for its breakdown"}</span><BreakdownToggle mode={mode} onChange={onModeChange} /></div></div>
+    <div className="bar-chart"><ResponsiveContainer width="100%" height="100%"><BarChart accessibilityLayer={false} data={rows} margin={{ top: 20, right: 8, left: -12, bottom: 0 }} stackOffset="sign" barGap={-22} onClick={({ activeLabel }, event) => {
+      if (event.target instanceof Element && event.target.closest(".recharts-bar-rectangle") && typeof activeLabel === "string") void onMonthSelect(activeLabel);
+    }}>
+      <CartesianGrid vertical={false} stroke="#e8e7e3" />
+      <XAxis dataKey="month" axisLine={false} tickLine={false} tick={renderMonthTick} />
+      <YAxis domain={yDomain} tickFormatter={(value) => compactEuro.format(value)} axisLine={false} tickLine={false} tick={{ fill: "#8b8f99", fontSize: 12 }} />
+      <ReferenceLine y={0} stroke="#a5a7aa" strokeWidth={1.2} />
+      <Tooltip cursor={{ fill: "#f6f5f2" }} content={({ active, label }) => {
+        const month = rows.find((row) => row.month === label);
+        if (!active || !month) return null;
+        return <div className="monthly-tooltip"><strong>{monthLabel(String(label))}</strong><ul>{series.filter(({ key }) => Number(month[key] ?? 0) !== 0).map(({ key, name, color }) => <li key={key}><span><i style={{ background: color }} />{name}</span><b>{euro.format(Number(month[key]))}</b></li>)}</ul><footer><span>Net total</span><b>{euro.format(month.netTotal)}</b></footer></div>;
+      }} />
+      {series.map(({ key, color }) => <Bar key={key} dataKey={key} stackId="spend" barSize={34} fill={color} fillOpacity={0.52} />)}
+      <Bar dataKey="netTotal" barSize={10} radius={[3, 3, 3, 3]} zIndex={400}>{rows.map((row) => <Cell key={row.month} fill={row.netTotal < 0 ? "#9E395F" : "#29243A"} />)}</Bar>
+    </BarChart></ResponsiveContainer></div>
+    <div className="legend">{series.map(({ key, name, color }) => <span key={key}><i style={{ background: color }} />{name}</span>)}<span className="net-total-legend"><i />Net total</span></div>
+    <div className="chart-note">{note}</div>
+  </section>;
 }
 
 type CoverageSegment = { start: string; end: string; imported: boolean; days: number };
@@ -747,15 +816,6 @@ function CoverageTimeline({ coverage, rangeStart, rangeEnd }: { coverage: Covera
 
 function PanelTitle({ title, range }: { title: string; range: string }) {
   return <h2>{title}<small>{range}</small></h2>;
-}
-
-function MonthDetail({ data, onClose }: { data: DashboardData; onClose: () => void }) {
-  const categoryScale = Math.max(1, ...data.categories.map((category) => Math.abs(category.value)));
-  return <section className="panel month-detail">
-    <div className="month-detail-heading"><div><p className="eyebrow">MONTH DETAIL</p><h2>{data.is_custom ? rangeLabel(data.range_start, data.range_end) : monthLabel(data.period)}</h2></div><button aria-label="Close month details" onClick={onClose}>×</button></div>
-    <div className="month-detail-stats"><div><span>Net spent</span><strong>{euro.format(data.total)}</strong></div><div><span>Activity</span><strong>{data.expense_count} expenses · {data.credit_count} credits</strong></div><div><span>Average net</span><strong>{euro.format(data.average)}</strong></div><div><span>Vs previous month</span><strong>{data.change === null ? "—" : `${data.change > 0 ? "+" : ""}${data.change.toFixed(1)}%`}</strong></div></div>
-    <div className="month-detail-content"><div><h3>Net category breakdown</h3><div className="month-categories">{data.categories.map((category) => <div key={category.name}><span><i style={{ background: category.color }} />{category.name}</span><div><b style={{ width: `${Math.abs(category.value) / categoryScale * 100}%`, background: category.color }} /><strong className={category.value < 0 ? "net-credit" : ""}>{euro.format(category.value)}</strong></div></div>)}</div></div><div><h3>Transactions</h3><div className="month-transactions"><TransactionRows items={data.transactions} showStatus /></div></div></div>
-  </section>;
 }
 
 function Kpi({ label, value, detail, icon, tone = "neutral" }: { label: string; value: string; detail: string; icon: React.ReactNode; tone?: string }) {
@@ -902,14 +962,15 @@ function TransactionList({ initialItems, categories }: { initialItems: Transacti
   </div>;
 }
 
-function TransactionRows({ items, showStatus = false }: { items: Transaction[]; showStatus?: boolean }) {
-  return <div className="transaction-list">{items.map((item) => <TransactionRow item={item} key={item.id} showStatus={showStatus} />)}</div>;
+function TransactionRows({ items }: { items: Transaction[] }) {
+  return <div className="transaction-list">{items.map((item) => <TransactionRow item={item} key={item.id} />)}</div>;
 }
 
 function TransactionRow({ item, showStatus = false, action }: { item: Transaction; showStatus?: boolean; action?: React.ReactNode }) {
   const primaryTopic = item.category || item.proposed_category || item.exclusion_reason?.replaceAll("_", " ") || "Pending review";
   const contextTopics = item.additional_categories.length ? item.additional_categories : item.proposed_additional_categories;
-  return <div className={`transaction ${action ? "with-action" : ""}`}><div className="merchant-icon">{item.merchant.charAt(0)}</div><div className="transaction-main"><strong>{item.merchant}</strong><span>{new Date(`${item.date}T00:00:00`).toLocaleDateString("en", { day: "numeric", month: "short" })}</span></div><div className="transaction-topics"><span className="category-pill" aria-label={`Primary topic: ${primaryTopic}`}><i style={{ background: item.category_color }} />{primaryTopic}</span>{contextTopics.map((topic) => <span className="context-topic-pill" key={topic.id}>{topic.name}</span>)}{item.transaction_label && <span className="transaction-label-pill" aria-label={`Transaction label: ${item.transaction_label}`}>Label: {item.transaction_label}</span>}</div>{showStatus && <span className={`status ${item.status}`}>{item.status}</span>}<strong className={item.amount >= 0 ? "amount income" : "amount"}>{signedEuro(item.amount)}</strong>{action}</div>;
+  const description = item.ai_description?.trim() || item.description.trim();
+  return <div className={`transaction ${action ? "with-action" : ""}`}><div className="merchant-icon">{item.merchant.charAt(0)}</div><div className="transaction-main"><strong>{item.merchant}</strong>{description && <p className="transaction-description">{description}</p>}<div className="transaction-meta"><span className="transaction-date">{new Date(`${item.date}T00:00:00`).toLocaleDateString("en", { day: "numeric", month: "short" })}</span><div className="transaction-topics"><span className="category-pill" aria-label={`Primary topic: ${primaryTopic}`}><i style={{ background: item.category_color }} />{primaryTopic}</span>{contextTopics.map((topic) => <span className="context-topic-pill" key={topic.id}>{topic.name}</span>)}{item.transaction_label && <span className="transaction-label-pill" aria-label={`Transaction label: ${item.transaction_label}`}>Label: {item.transaction_label}</span>}</div></div></div>{showStatus && <span className={`status ${item.status}`}>{item.status}</span>}<strong className={item.amount >= 0 ? "amount income" : "amount"}>{signedEuro(item.amount)}</strong>{action}</div>;
 }
 
 function TopicAssignmentPicker({ categories, primaryId, contextIds, label, transactionLabel, onPrimary, onContext, onTransactionLabel }: { categories: Category[]; primaryId: number | null; contextIds: number[]; label: string; transactionLabel: string; onPrimary: (categoryId: number) => void; onContext: (categoryId: number) => void; onTransactionLabel: (value: string) => void }) {
