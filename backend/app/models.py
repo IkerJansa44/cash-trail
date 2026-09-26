@@ -53,6 +53,8 @@ class Transaction(Base):
     status: Mapped[str] = mapped_column(String(20), index=True)
     classification_source: Mapped[str] = mapped_column(String(20))
     ai_description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    transaction_label: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    label_updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     exclusion_reason: Mapped[str | None] = mapped_column(String(30), nullable=True)
     category_id: Mapped[int | None] = mapped_column(ForeignKey("categories.id"), nullable=True)

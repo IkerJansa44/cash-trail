@@ -35,6 +35,7 @@ export type Transaction = {
   date: string;
   description: string;
   ai_description: string | null;
+  transaction_label: string | null;
   merchant: string;
   amount: number;
   category: string | null;

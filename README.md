@@ -25,6 +25,8 @@ All selected topics remain searchable and are learned as merchant hints. Live we
 so ambiguous merchants can be researched before classification. Categorized dashboards update
 after approval; pending activity remains visible as such.
 Primary and context topics can also be edited directly from the Transactions tab.
+Each transaction can also carry one optional free-text label, separate from the topic taxonomy.
+The topic picker suggests recently used labels when its label field receives focus.
 
 Spending topics support arbitrary-depth parent/child relationships. Transactions may attach to any
 topic and analytics roll their spending up to the root. The Topics tab supports rename, move,

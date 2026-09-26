@@ -58,6 +58,7 @@ class ReviewApprovalItem(BaseModel):
     description: str = Field(min_length=1, max_length=160)
     category_id: int
     additional_category_ids: list[int] = Field(default_factory=list)
+    transaction_label: str | None = Field(default=None, max_length=60)
 
 
 class ReviewApprovalRequest(BaseModel):
@@ -72,6 +73,7 @@ class TransactionTopicsUpdate(BaseModel):
     description: str = Field(min_length=1, max_length=160)
     category_id: int
     additional_category_ids: list[int] = Field(default_factory=list)
+    transaction_label: str | None = Field(default=None, max_length=60)
 
 
 class TransactionExclusionUpdate(BaseModel):
@@ -113,6 +115,14 @@ def initialize_database() -> None:
             connection.exec_driver_sql(
                 "ALTER TABLE transactions ADD COLUMN proposed_category_id INTEGER "
                 "REFERENCES categories(id)"
+            )
+        if "transaction_label" not in transaction_columns:
+            connection.exec_driver_sql(
+                "ALTER TABLE transactions ADD COLUMN transaction_label VARCHAR(60)"
+            )
+        if "label_updated_at" not in transaction_columns:
+            connection.exec_driver_sql(
+                "ALTER TABLE transactions ADD COLUMN label_updated_at DATETIME"
             )
     with Session(engine) as session:
         session.execute(
@@ -965,6 +975,8 @@ def approve_review_queue(request: ReviewApprovalRequest, db: DatabaseSession) ->
     for approval in request.items:
         transaction = transactions[approval.transaction_id]
         transaction.ai_description = approval.description.strip()
+        if "transaction_label" in approval.model_fields_set:
+            _set_transaction_label(transaction, approval.transaction_label)
         transaction.category_id = approval.category_id
         transaction.proposed_category_id = approval.category_id
         transaction.status = "confirmed"
@@ -1011,6 +1023,27 @@ def _validate_topic_selection(
             400,
             "Every transaction needs one primary topic and unique additional topics",
         )
+
+
+def _set_transaction_label(transaction: Transaction, label: str | None) -> None:
+    normalized = (label or "").strip() or None
+    if normalized == transaction.transaction_label:
+        return
+    transaction.transaction_label = normalized
+    transaction.label_updated_at = datetime.now(UTC) if normalized else None
+
+
+@app.get("/api/transaction-labels/recent")
+def recent_transaction_labels(db: DatabaseSession) -> list[str]:
+    return list(
+        db.scalars(
+            select(Transaction.transaction_label)
+            .where(Transaction.transaction_label.is_not(None))
+            .group_by(Transaction.transaction_label)
+            .order_by(func.max(Transaction.label_updated_at).desc(), Transaction.transaction_label)
+            .limit(6)
+        )
+    )
 
 
 @app.get("/api/transactions")
@@ -1078,6 +1111,8 @@ def update_transaction_topics(
     categories = {item.id: item for item in db.scalars(select(Category))}
     _validate_topic_selection(request.category_id, request.additional_category_ids, set(categories))
     transaction.ai_description = request.description.strip()
+    if "transaction_label" in request.model_fields_set:
+        _set_transaction_label(transaction, request.transaction_label)
     transaction.category_id = request.category_id
     transaction.proposed_category_id = request.category_id
     transaction.status = "confirmed"
@@ -1158,6 +1193,7 @@ def _serialize_transaction(item: Transaction, categories: dict[int, Category]) -
         "date": item.operation_date.isoformat(),
         "description": item.description,
         "ai_description": item.ai_description,
+        "transaction_label": item.transaction_label,
         "merchant": item.merchant,
         "amount": float(item.amount),
         "category": category.name if category else None,

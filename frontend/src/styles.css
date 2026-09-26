@@ -278,6 +278,7 @@ select, .import-button { height: 42px; border-radius: 9px; border: 1px solid #db
 .category-pill { color: #72767c; font-size: 9px; text-transform: capitalize; }
 .transaction-topics { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
 .context-topic-pill { padding: 3px 6px; border-radius: 9px; background: #f0eef8; color: #6d6195; font-size: 8px; }
+.transaction-label-pill { padding: 3px 6px; border: 1px solid #deddd8; border-radius: 9px; color: #62666c; font-size: 8px; }
 .amount { text-align: right; font-weight: 600; white-space: nowrap; }
 .amount.income { color: #218363; }
 .transactions-page { display: grid; gap: 14px; }
@@ -389,14 +390,25 @@ select, .import-button { height: 42px; border-radius: 9px; border: 1px solid #db
 .topic-assignment-head span:not(:first-child) { text-align: center; }
 .topic-assignment-row { min-height: 27px; padding: 0 7px; border-radius: 5px; }
 .topic-assignment-row:hover { background: #f7f5fb; }
+.topic-assignment-row:has(.primary-topic-choice input:checked) { background: #f5f9e8; }
 .topic-assignment-row > span { overflow: hidden; color: #535861; text-overflow: ellipsis; white-space: nowrap; }
 .topic-assignment-row label { display: flex; align-items: center; justify-content: center; gap: 4px; cursor: pointer; }
 .topic-assignment-row label span { font-size: 7px; }
 .primary-topic-choice { color: #6f8322; }
-.primary-topic-choice input { accent-color: #b7df45; }
+.primary-topic-choice input { width: 14px; height: 14px; accent-color: #789225; }
 .context-topic-choice { color: #6d6195; }
 .context-topic-choice input { accent-color: #7357d9; }
 .context-topic-choice:has(input:disabled) { opacity: .35; cursor: default; }
+.transaction-label-field { position: relative; margin: 9px 3px 2px; padding: 10px 5px 3px; border-top: 1px solid #dedbd4; }
+.transaction-label-field > div:first-child { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+.transaction-label-field strong { color: #484c52; font-size: 10px; font-weight: 600; }
+.transaction-label-field > div:first-child span { color: #8a8e94; font-size: 9px; }
+.transaction-label-field input { width: 100%; height: 34px; padding: 0 9px; border: 1px solid #dedbd4; border-radius: 7px; background: white; color: #484c52; font-size: 10px; }
+.transaction-label-field input::placeholder { color: #9a9da3; }
+.transaction-label-suggestions { position: absolute; z-index: 2; right: 5px; bottom: calc(100% - 9px); left: 5px; max-height: 160px; padding: 4px; overflow-y: auto; border: 1px solid #ded9eb; border-radius: 7px; background: white; box-shadow: 0 8px 18px #20252b1a; }
+.transaction-label-suggestions > span { display: block; padding: 4px 6px; color: #8a8e94; font-size: 8px; font-weight: 650; text-transform: uppercase; }
+.transaction-label-suggestions button { width: 100%; padding: 7px 6px; border: 0; border-radius: 5px; background: transparent; color: #484c52; font-size: 10px; text-align: left; cursor: pointer; }
+.transaction-label-suggestions button:hover, .transaction-label-suggestions button:focus-visible { background: #f7f5fb; }
 .topic-creation-options { margin-top: 7px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .topic-creation-option { min-width: 0; padding: 10px; display: flex; flex-direction: column; gap: 7px; border: 1px solid #e5e3dd; border-radius: 9px; background: #faf9f6; }
 .topic-creation-option > span { color: #62666c; font-size: 8px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }

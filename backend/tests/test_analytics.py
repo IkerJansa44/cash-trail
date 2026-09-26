@@ -1,5 +1,5 @@
 import json
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 from sqlalchemy import create_engine, select
@@ -24,6 +24,7 @@ from app.main import (
     dashboard,
     delete_topic,
     merge_topic,
+    recent_transaction_labels,
     statement_coverage,
     topic_tree,
     transactions,
@@ -411,6 +412,7 @@ def test_approval_applies_edited_proposal_and_updates_dashboard() -> None:
                     description="Coffee with a friend.",
                     category_id=topic.id,
                     additional_category_ids=[context.id],
+                    transaction_label="  Mar weekend  ",
                 )
             ]
         ),
@@ -421,6 +423,8 @@ def test_approval_applies_edited_proposal_and_updates_dashboard() -> None:
     assert result == {"approved": 1}
     assert transaction.status == "confirmed"
     assert transaction.ai_description == "Coffee with a friend."
+    assert transaction.transaction_label == "Mar weekend"
+    assert recent_transaction_labels(db) == ["Mar weekend"]
     assert transaction.category_id == topic.id
     assert db.query(MerchantRule).one().category_id == topic.id
     assert db.query(TransactionTag).one().category_id == context.id
@@ -428,6 +432,7 @@ def test_approval_applies_edited_proposal_and_updates_dashboard() -> None:
     approved = dashboard(db, start_date=date(2026, 8, 11), end_date=date(2026, 8, 11))
     assert approved["categories"][0]["name"] == "Dining"
     assert approved["total"] == 8.5
+    assert approved["transactions"][0]["transaction_label"] == "Mar weekend"
 
 
 def test_classifies_only_the_requested_review_batch(monkeypatch) -> None:
@@ -501,6 +506,7 @@ def test_edits_primary_and_context_topics_from_transactions() -> None:
             description="Coffee during a day trip.",
             category_id=dining.id,
             additional_category_ids=[travel.id],
+            transaction_label="  Day trip  ",
         ),
         db,
     )
@@ -508,11 +514,53 @@ def test_edits_primary_and_context_topics_from_transactions() -> None:
     db.refresh(transaction)
     assert updated["category_id"] == dining.id
     assert updated["additional_categories"][0]["id"] == travel.id
+    assert updated["transaction_label"] == "Day trip"
+    assert recent_transaction_labels(db) == ["Day trip"]
     assert transaction.status == "confirmed"
     assert transaction.classification_source == "edited"
     assert transaction.ai_description == "Coffee during a day trip."
     assert db.query(MerchantRule).one().category_id == dining.id
     assert db.query(MerchantTagRule).one().category_id == travel.id
+
+    cleared = update_transaction_topics(
+        transaction.id,
+        TransactionTopicsUpdate(
+            description="Coffee during a day trip.",
+            category_id=dining.id,
+            additional_category_ids=[travel.id],
+            transaction_label="",
+        ),
+        db,
+    )
+    assert cleared["transaction_label"] is None
+    assert recent_transaction_labels(db) == []
+
+
+def test_recent_transaction_labels_use_latest_assignment() -> None:
+    db = session()
+    batch = ImportBatch(filename="statement.xls", imported_count=3, duplicate_count=0)
+    db.add(batch)
+    db.flush()
+    now = datetime.now(UTC)
+    db.add_all(
+        Transaction(
+            operation_date=date(2026, 8, 11),
+            description=f"Payment {index}",
+            merchant=f"Merchant {index}",
+            amount=Decimal("-8.50"),
+            currency="EUR",
+            fingerprint=f"label-{index}",
+            status="confirmed",
+            classification_source="approved",
+            import_batch_id=batch.id,
+            transaction_label=label,
+            label_updated_at=now + timedelta(minutes=index),
+        )
+        for index, label in enumerate(("Trip", "Move", "Trip"))
+    )
+    db.commit()
+
+    assert recent_transaction_labels(db) == ["Trip", "Move"]
 
 
 def test_manually_excludes_and_restores_a_transaction() -> None:
