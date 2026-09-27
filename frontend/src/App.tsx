@@ -1,12 +1,9 @@
 import { ChangeEvent, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
-  ArrowDownRight,
-  ArrowUpRight,
   Ban,
   BellRing,
   CalendarRange,
-  ChartNoAxesCombined,
   Check,
   ChevronLeft,
   ChevronRight,
@@ -40,6 +37,8 @@ import {
 } from "recharts";
 import type { XAxisTickContentProps } from "recharts";
 import { apiRequest, uploadRequest } from "./api";
+import { crossGroupBreakdowns, labelKey, labelName, matchesBreakdownSelection, unlabeledKey } from "./breakdown";
+import type { BreakdownMode } from "./breakdown";
 import { taxonomyRows, topicLabel } from "./topicTaxonomy";
 import TopicsPage from "./Topics";
 import NotificationsPage from "./Notifications";
@@ -447,8 +446,8 @@ export default function App() {
 
         {notice && <div className="notice" onClick={() => setNotice("")}>{notice}<span>×</span></div>}
         {view === "review" && codexProgress && <CodexProgressBanner progress={codexProgress} />}
-        {view === "dashboard" && dashboard?.available_periods.length ? <div className="range-bar"><div><CalendarRange /><strong>Custom spending range</strong></div><DateRangePicker start={rangeStart} end={rangeEnd} initialMonth={dashboard.period} busy={busy} onChange={(start, end) => { setRangeStart(start); setRangeEnd(end); }} onApply={applyRange} />{dashboard.is_custom && <button className="clear-range" onClick={clearRange}>Clear</button>}</div> : null}
         {view === "notifications" ? <NotificationsPage /> : busy && !dashboard ? <EmptyState loading /> : view === "dashboard" ? <Dashboard data={dashboard} topics={categories} coverage={coverage} selectedMonthData={selectedMonthData} monthBusy={monthBusy} onMonthSelect={selectMonth} onTransactionSaved={refreshDashboardAfterEdit} /> : view === "transactions" ? <TransactionList initialItems={transactions} categories={categories} /> : view === "topics" ? <TopicsPage /> : <ReviewQueue items={review} categories={categories} onApprove={approveTransactions} onExclude={excludeReviewTransaction} onClassify={classifyPending} onTopicsChanged={async () => setCategories(await apiRequest<Category[]>("/api/categories"))} busy={busy} />}
+        {view === "dashboard" && dashboard?.available_periods.length ? <div className="range-bar"><div><CalendarRange /><strong>Custom spending range</strong></div><DateRangePicker start={rangeStart} end={rangeEnd} initialMonth={dashboard.period} busy={busy} onChange={(start, end) => { setRangeStart(start); setRangeEnd(end); }} onApply={applyRange} />{dashboard.is_custom && <button className="clear-range" onClick={clearRange}>Clear</button>}</div> : null}
         </div>
       </main>
       {isDraggingStatement && <OverviewDropOverlay filename={draggedFilename} />}
@@ -584,9 +583,7 @@ function DateRangePicker({ start, end, initialMonth, busy, onChange, onApply }: 
 }
 
 type MonthlySeries = { key: string; name: string; color: string };
-type BreakdownMode = "topic" | "label";
 type BreakdownItem = { key: string; name: string; value: number; color: string };
-const unlabeledKey = "unlabeled";
 
 function labelColor(name: string): string {
   let hue = 0;
@@ -609,8 +606,10 @@ function BreakdownToggle({ mode, onChange }: { mode: BreakdownMode; onChange: (m
 }
 
 function Dashboard({ data, topics, coverage, selectedMonthData, monthBusy, onMonthSelect, onTransactionSaved }: { data: DashboardData | null; topics: Category[]; coverage: CoverageData | null; selectedMonthData: DashboardData | null; monthBusy: boolean; onMonthSelect: (month: string) => Promise<void>; onTransactionSaved: (item: Transaction) => void }) {
+  const breakdownListId = useId();
   const [breakdownMode, setBreakdownMode] = useState<BreakdownMode>("topic");
   const [selectedBreakdown, setSelectedBreakdown] = useState<Set<string>>(new Set());
+  const [selectedSubgroups, setSelectedSubgroups] = useState<Map<string, Set<string>>>(new Map());
   const [selectedChartSeries, setSelectedChartSeries] = useState<Set<string>>(new Set());
   const [pieTooltipOpen, setPieTooltipOpen] = useState(false);
   const breakdownData = selectedMonthData ?? data;
@@ -646,25 +645,25 @@ function Dashboard({ data, topics, coverage, selectedMonthData, monthBusy, onMon
   const labelBreakdown = useMemo<BreakdownItem[]>(() => {
     const totals = new Map<string, number>();
     for (const item of breakdownData?.transactions ?? []) {
-      const key = item.transaction_label ? `label:${item.transaction_label}` : unlabeledKey;
+      const key = labelKey(item.transaction_label);
       totals.set(key, (totals.get(key) ?? 0) - item.amount);
     }
-    return [...totals].map(([key, value]) => ({ key, name: key === unlabeledKey ? "Unlabeled" : key.slice(6), value: Number(value.toFixed(2)), color: key === unlabeledKey ? "#B2B8C5" : labelColor(key.slice(6)) })).sort((left, right) => right.value - left.value);
+    return [...totals].map(([key, value]) => ({ key, name: labelName(key), value: Number(value.toFixed(2)), color: key === unlabeledKey ? "#B2B8C5" : labelColor(labelName(key)) })).sort((left, right) => right.value - left.value);
   }, [breakdownData]);
   const topicBreakdown = (breakdownData?.categories ?? []).map((item) => ({ ...item, key: item.name }));
   const breakdown = breakdownMode === "topic" ? topicBreakdown : labelBreakdown;
-  const selectedTotal = breakdown.reduce((total, item) => selectedBreakdown.has(item.key) ? total + item.value : total, 0);
-  const topicsById = new Map(topics.map((topic) => [topic.id, topic]));
-  const recentTransactions = (breakdownData?.transactions ?? []).filter((item) => {
-    if (!selectedBreakdown.size) return true;
-    if (breakdownMode === "label") return selectedBreakdown.has(item.transaction_label ? `label:${item.transaction_label}` : unlabeledKey);
-    if (!item.category_id) return selectedBreakdown.has("Pending review");
-    let topic = topicsById.get(item.category_id);
-    while (topic?.parent_id) topic = topicsById.get(topic.parent_id);
-    return Boolean(topic && selectedBreakdown.has(topic.name));
-  });
+  const topicsById = useMemo(() => new Map(topics.map((topic) => [topic.id, topic])), [topics]);
+  const crossBreakdown = useMemo(
+    () => crossGroupBreakdowns(breakdownData?.transactions ?? [], breakdownMode, topicsById),
+    [breakdownData, breakdownMode, topicsById],
+  );
+  const recentTransactions = (breakdownData?.transactions ?? []).filter((item) => matchesBreakdownSelection(
+    item, breakdownMode, topicsById, selectedBreakdown, selectedSubgroups,
+  ));
+  const selectedTotal = recentTransactions.reduce((total, item) => total - item.amount, 0);
   const clearBreakdownSelection = useCallback(() => {
     setSelectedBreakdown((current) => current.size ? new Set() : current);
+    setSelectedSubgroups((current) => current.size ? new Map() : current);
     setPieTooltipOpen(false);
   }, []);
   const clearChartSelection = useCallback(() => setSelectedChartSeries((current) => current.size ? new Set() : current), []);
@@ -679,10 +678,27 @@ function Dashboard({ data, topics, coverage, selectedMonthData, monthBusy, onMon
     else next.add(key);
     return next;
   });
-  const toggleBreakdown = (key: string) => setSelectedBreakdown((current) => {
-    const next = new Set(current);
-    if (next.has(key)) next.delete(key);
-    else next.add(key);
+  const toggleBreakdown = (key: string) => {
+    setSelectedBreakdown((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+    setSelectedSubgroups((current) => {
+      if (!current.has(key)) return current;
+      const next = new Map(current);
+      next.delete(key);
+      return next;
+    });
+  };
+  const toggleSubgroup = (group: string, subgroup: string) => setSelectedSubgroups((current) => {
+    const next = new Map(current);
+    const selected = new Set(next.get(group));
+    if (selected.has(subgroup)) selected.delete(subgroup);
+    else selected.add(subgroup);
+    if (selected.size) next.set(group, selected);
+    else next.delete(group);
     return next;
   });
   useEffect(clearBreakdownSelection, [breakdownData, clearBreakdownSelection]);
@@ -695,7 +711,7 @@ function Dashboard({ data, topics, coverage, selectedMonthData, monthBusy, onMon
       }
     };
     const clearOutsideSelection = (event: MouseEvent) => {
-      if (!(event.target instanceof Element) || !event.target.closest(".category-list button, .donut .recharts-sector, .chart-panel")) clearBreakdownSelection();
+      if (!(event.target instanceof Element) || !event.target.closest(".category-list, .donut .recharts-sector, .chart-panel")) clearBreakdownSelection();
     };
     window.addEventListener("keydown", clearSelection);
     window.addEventListener("mousedown", clearOutsideSelection);
@@ -716,20 +732,13 @@ function Dashboard({ data, topics, coverage, selectedMonthData, monthBusy, onMon
   }));
   return (
     <div className="dashboard">
-      <section className="kpi-grid">
-        <Kpi label={data.is_custom ? "Net spent in range" : "Net spent this month"} value={euro.format(data.total)} detail={`${data.expense_count} expenses · ${data.credit_count} credits`} icon={<WalletCards />} />
-        <Kpi label={data.is_custom ? "Previous equal period" : "Month over month"} value={data.change === null ? "—" : `${Math.abs(data.change).toFixed(1)}%`} detail={data.change === null ? "No preceding data" : data.change > 0 ? "More than before" : "Less than before"} icon={data.change !== null && data.change > 0 ? <ArrowUpRight /> : <ArrowDownRight />} tone={data.change !== null && data.change > 0 ? "warning" : "good"} />
-        <Kpi label="Average net transaction" value={euro.format(data.average)} detail={data.is_custom ? `${shortDate(data.range_start)} – ${shortDate(data.range_end)}` : monthLabel(data.period)} icon={<ChartNoAxesCombined />} />
-        <Kpi label="Needs review" value={String(data.pending)} detail={data.pending ? "Help improve future imports" : "Everything is categorized"} icon={data.pending ? <CircleHelp /> : <Check />} tone={data.pending ? "warning" : "good"} />
-      </section>
-
       <MonthlySpendChart title={`Net monthly spend by ${breakdownMode}`} range={activeRange} rows={chartRows} series={chartSeries} allSeries={allChartSeries} selectedSeries={selectedChartSeries} yDomain={yDomain} mode={breakdownMode} onModeChange={changeBreakdownMode} onSeriesToggle={toggleChartSeries} onClearSeries={clearChartSelection} monthBusy={monthBusy} selectedMonth={selectedMonthData?.period ?? null} onMonthSelect={onMonthSelect} />
 
       <div className="lower-grid">
         <section className="panel category-panel">
           <div className="panel-heading"><div><p className="eyebrow">BREAKDOWN</p><PanelTitle title={`Net by ${breakdownMode}`} range={breakdownRange} /></div><BreakdownToggle mode={breakdownMode} onChange={changeBreakdownMode} /></div>
           <div className="category-content">
-            <div className="donut"><ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={positiveBreakdown} dataKey="value" innerRadius={60} outerRadius={82} paddingAngle={2}>{positiveBreakdown.map((item) => <Cell key={item.key} fill={item.color} opacity={!selectedBreakdown.size || selectedBreakdown.has(item.key) ? 1 : 0.35} stroke={selectedBreakdown.has(item.key) ? "#202329" : "#fff"} strokeWidth={selectedBreakdown.has(item.key) ? 2 : 1} style={{ cursor: "pointer" }} onMouseEnter={() => setPieTooltipOpen(true)} onMouseLeave={() => setPieTooltipOpen(false)} onClick={() => {
+            <div className="donut"><ResponsiveContainer width="100%" height="100%"><PieChart accessibilityLayer={false}><Pie data={positiveBreakdown} dataKey="value" innerRadius={60} outerRadius={82} paddingAngle={2}>{positiveBreakdown.map((item) => <Cell key={item.key} fill={item.color} opacity={!selectedBreakdown.size || selectedBreakdown.has(item.key) ? 1 : 0.35} stroke={selectedBreakdown.has(item.key) ? "#202329" : "#fff"} strokeWidth={selectedBreakdown.has(item.key) ? 2 : 1} style={{ cursor: "pointer" }} onMouseEnter={() => setPieTooltipOpen(true)} onMouseLeave={() => setPieTooltipOpen(false)} onClick={() => {
               const wasSelected = selectedBreakdown.has(item.key);
               toggleBreakdown(item.key);
               setPieTooltipOpen(!wasSelected);
@@ -737,7 +746,29 @@ function Dashboard({ data, topics, coverage, selectedMonthData, monthBusy, onMon
               const item = payload?.[0]?.payload as BreakdownItem | undefined;
               return active && item ? <div className="category-tooltip"><span><i style={{ background: item.color }} />{item.name}</span><strong>{euro.format(item.value)}</strong></div> : null;
             }} /></PieChart></ResponsiveContainer><div aria-live="polite"><strong>{euro.format(selectedBreakdown.size ? selectedTotal : breakdownData?.total ?? data.total)}</strong><span>{selectedBreakdown.size ? "Selected total" : "Net total"}</span></div></div>
-            <div className="category-list">{breakdown.map((item) => <button className={selectedBreakdown.has(item.key) ? "selected" : ""} key={item.key} aria-pressed={selectedBreakdown.has(item.key)} onClick={() => { setPieTooltipOpen(false); toggleBreakdown(item.key); }}><span><i style={{ background: item.color }} />{item.name}</span><strong className={item.value < 0 ? "net-credit" : ""}>{euro.format(item.value)}</strong></button>)}</div>
+            <div className="category-list">{breakdown.map((item, index) => {
+              const selected = selectedBreakdown.has(item.key);
+              const detailId = `${breakdownListId}-${index}`;
+              return <div className="category-entry" key={item.key}>
+                <button className={selected ? "selected" : ""} aria-pressed={selected} aria-expanded={selected} aria-controls={detailId} onClick={() => { setPieTooltipOpen(false); toggleBreakdown(item.key); }}>
+                  <span><i style={{ background: item.color }} />{item.name}</span>
+                  <span className="category-row-end"><strong className={item.value < 0 ? "net-credit" : ""}>{euro.format(item.value)}</strong><ChevronRight className={selected ? "expanded" : ""} /></span>
+                </button>
+                <div className="category-sublist" id={detailId} hidden={!selected}>
+                  <small>BY {breakdownMode === "topic" ? "LABEL" : "TOPIC"}</small>
+                  {(crossBreakdown.get(item.key) ?? []).map((group) => {
+                    const subgroupSelected = selectedSubgroups.get(item.key)?.has(group.key) ?? false;
+                    const color = breakdownMode === "topic"
+                      ? group.key === unlabeledKey ? "#B2B8C5" : labelColor(group.name)
+                      : topicColors[group.name] || "#B2B8C5";
+                    return <button type="button" className={`category-subrow${subgroupSelected ? " selected" : ""}`} key={group.key} aria-pressed={subgroupSelected} onClick={() => { setPieTooltipOpen(false); toggleSubgroup(item.key, group.key); }}>
+                      <span><i style={{ background: color }} />{group.name}</span>
+                      <strong className={group.value < 0 ? "net-credit" : ""}>{euro.format(group.value)}</strong>
+                    </button>;
+                  })}
+                </div>
+              </div>;
+            })}</div>
           </div>
         </section>
         <section className="panel recent-panel"><div className="panel-heading"><div><p className="eyebrow">ACTIVITY</p><PanelTitle title="Recent transactions" range={breakdownRange} /></div>{selectedBreakdown.size > 0 && <button className="clear-category-filter" onClick={clearBreakdownSelection}>Clear filter</button>}</div>{recentTransactions.length ? <EditableTransactionRows items={recentTransactions} categories={topics} onSaved={onTransactionSaved} /> : <div className="no-recent-transactions"><Search /><strong>No recent transactions</strong><span>{selectedBreakdown.size ? `Try selecting another ${breakdownMode}.` : "There are no transactions in this period."}</span></div>}</section>
@@ -849,10 +880,6 @@ function CoverageTimeline({ coverage, rangeStart, rangeEnd }: { coverage: Covera
 
 function PanelTitle({ title, range }: { title: string; range: string }) {
   return <h2>{title}<small>{range}</small></h2>;
-}
-
-function Kpi({ label, value, detail, icon, tone = "neutral" }: { label: string; value: string; detail: string; icon: React.ReactNode; tone?: string }) {
-  return <div className="kpi"><div className={`kpi-icon ${tone}`}>{icon}</div><p>{label}</p><strong>{value}</strong><span>{detail}</span></div>;
 }
 
 function TransactionList({ initialItems, categories }: { initialItems: Transaction[]; categories: Category[] }) {
