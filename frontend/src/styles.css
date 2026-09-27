@@ -241,6 +241,7 @@ select, .import-button { height: 42px; border-radius: 9px; border: 1px solid #db
 .category-panel, .recent-panel { padding: 23px 24px; min-height: 340px; }
 .category-content { display: grid; grid-template-columns: 180px minmax(0, 1fr); align-items: center; gap: 18px; }
 .donut { position: relative; height: 200px; }
+.donut .recharts-surface:focus, .donut .recharts-surface :focus { outline: none; }
 .donut > div:last-child { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; pointer-events: none; }
 .donut strong, .donut span { display: block; }
 .donut strong { font-family: Georgia, serif; font-size: 18px; font-weight: 500; }
