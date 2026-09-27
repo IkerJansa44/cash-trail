@@ -12,6 +12,8 @@ The overview switches its monthly chart and spending breakdown between topics an
 view groups transactions without a label as "Unlabeled," so both views cover the same spending.
 Selecting a chart column or month label shows that month's spending in the existing pie breakdown
 and recent transactions list. The main chart and summary cards continue to show the overview range.
+Clicking topic or label names beneath the chart isolates those series and their net total; click
+another name to include it, click a selected name to remove it, or press Escape to clear filters.
 
 When a bank export includes queried `from` and `to` dates, those are used as the authoritative
 coverage range. If they are omitted, Cash Trail falls back to the earliest and latest transaction
@@ -26,7 +28,8 @@ allocates money in totals and stacked columns, so contextual topics never double
 All selected topics remain searchable and are learned as merchant hints. Live web search is enabled
 so ambiguous merchants can be researched before classification. Categorized dashboards update
 after approval; pending activity remains visible as such.
-Primary and context topics can also be edited directly from the Transactions tab.
+Descriptions, primary and context topics, and labels can also be edited from the Transactions tab
+or the overview's Recent transactions list.
 Each transaction can also carry one optional free-text label, separate from the topic taxonomy.
 The topic picker suggests recently used labels when its label field receives focus.
 

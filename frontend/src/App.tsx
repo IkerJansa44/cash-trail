@@ -34,6 +34,7 @@ import {
   ReferenceLine,
   ResponsiveContainer,
   Tooltip,
+  usePlotArea,
   XAxis,
   YAxis,
 } from "recharts";
@@ -407,10 +408,17 @@ export default function App() {
     }
   };
 
-  const clearSelectedMonth = () => {
-    monthRequestId.current += 1;
-    setSelectedMonthData(null);
-    setMonthBusy(false);
+  const refreshDashboardAfterEdit = async () => {
+    if (!dashboard) return;
+    const params = dashboard.is_custom
+      ? new URLSearchParams({ start_date: dashboard.range_start, end_date: dashboard.range_end })
+      : new URLSearchParams({ year: dashboard.period.slice(0, 4), month: String(Number(dashboard.period.slice(5))) });
+    try {
+      setDashboard(await apiRequest<DashboardData>(`/api/dashboard?${params}`));
+      if (selectedMonthData) await selectMonth(selectedMonthData.period);
+    } catch (error) {
+      setNotice(`Transaction saved, but the overview could not refresh: ${error instanceof Error ? error.message : "unknown error"}`);
+    }
   };
 
   return (
@@ -440,7 +448,7 @@ export default function App() {
         {notice && <div className="notice" onClick={() => setNotice("")}>{notice}<span>×</span></div>}
         {view === "review" && codexProgress && <CodexProgressBanner progress={codexProgress} />}
         {view === "dashboard" && dashboard?.available_periods.length ? <div className="range-bar"><div><CalendarRange /><strong>Custom spending range</strong></div><DateRangePicker start={rangeStart} end={rangeEnd} initialMonth={dashboard.period} busy={busy} onChange={(start, end) => { setRangeStart(start); setRangeEnd(end); }} onApply={applyRange} />{dashboard.is_custom && <button className="clear-range" onClick={clearRange}>Clear</button>}</div> : null}
-        {view === "notifications" ? <NotificationsPage /> : busy && !dashboard ? <EmptyState loading /> : view === "dashboard" ? <Dashboard data={dashboard} topics={categories} coverage={coverage} selectedMonthData={selectedMonthData} monthBusy={monthBusy} onMonthSelect={selectMonth} onClearMonth={clearSelectedMonth} /> : view === "transactions" ? <TransactionList initialItems={transactions} categories={categories} /> : view === "topics" ? <TopicsPage /> : <ReviewQueue items={review} categories={categories} onApprove={approveTransactions} onExclude={excludeReviewTransaction} onClassify={classifyPending} onTopicsChanged={async () => setCategories(await apiRequest<Category[]>("/api/categories"))} busy={busy} />}
+        {view === "notifications" ? <NotificationsPage /> : busy && !dashboard ? <EmptyState loading /> : view === "dashboard" ? <Dashboard data={dashboard} topics={categories} coverage={coverage} selectedMonthData={selectedMonthData} monthBusy={monthBusy} onMonthSelect={selectMonth} onTransactionSaved={refreshDashboardAfterEdit} /> : view === "transactions" ? <TransactionList initialItems={transactions} categories={categories} /> : view === "topics" ? <TopicsPage /> : <ReviewQueue items={review} categories={categories} onApprove={approveTransactions} onExclude={excludeReviewTransaction} onClassify={classifyPending} onTopicsChanged={async () => setCategories(await apiRequest<Category[]>("/api/categories"))} busy={busy} />}
         </div>
       </main>
       {isDraggingStatement && <OverviewDropOverlay filename={draggedFilename} />}
@@ -600,9 +608,10 @@ function BreakdownToggle({ mode, onChange }: { mode: BreakdownMode; onChange: (m
   return <div className="breakdown-toggle" role="group" aria-label="Group spending by">{(["topic", "label"] as const).map((option) => <button key={option} type="button" aria-pressed={mode === option} onClick={() => onChange(option)}>{option === "topic" ? "Topics" : "Labels"}</button>)}</div>;
 }
 
-function Dashboard({ data, topics, coverage, selectedMonthData, monthBusy, onMonthSelect, onClearMonth }: { data: DashboardData | null; topics: Category[]; coverage: CoverageData | null; selectedMonthData: DashboardData | null; monthBusy: boolean; onMonthSelect: (month: string) => Promise<void>; onClearMonth: () => void }) {
+function Dashboard({ data, topics, coverage, selectedMonthData, monthBusy, onMonthSelect, onTransactionSaved }: { data: DashboardData | null; topics: Category[]; coverage: CoverageData | null; selectedMonthData: DashboardData | null; monthBusy: boolean; onMonthSelect: (month: string) => Promise<void>; onTransactionSaved: (item: Transaction) => void }) {
   const [breakdownMode, setBreakdownMode] = useState<BreakdownMode>("topic");
   const [selectedBreakdown, setSelectedBreakdown] = useState<Set<string>>(new Set());
+  const [selectedChartSeries, setSelectedChartSeries] = useState<Set<string>>(new Set());
   const [pieTooltipOpen, setPieTooltipOpen] = useState(false);
   const breakdownData = selectedMonthData ?? data;
   const topicNames = useMemo(() => {
@@ -658,10 +667,18 @@ function Dashboard({ data, topics, coverage, selectedMonthData, monthBusy, onMon
     setSelectedBreakdown((current) => current.size ? new Set() : current);
     setPieTooltipOpen(false);
   }, []);
+  const clearChartSelection = useCallback(() => setSelectedChartSeries((current) => current.size ? new Set() : current), []);
   const changeBreakdownMode = (mode: BreakdownMode) => {
     setBreakdownMode(mode);
     clearBreakdownSelection();
+    clearChartSelection();
   };
+  const toggleChartSeries = (key: string) => setSelectedChartSeries((current) => {
+    const next = new Set(current);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    return next;
+  });
   const toggleBreakdown = (key: string) => setSelectedBreakdown((current) => {
     const next = new Set(current);
     if (next.has(key)) next.delete(key);
@@ -669,12 +686,16 @@ function Dashboard({ data, topics, coverage, selectedMonthData, monthBusy, onMon
     return next;
   });
   useEffect(clearBreakdownSelection, [breakdownData, clearBreakdownSelection]);
+  useEffect(clearChartSelection, [data?.range_start, data?.range_end, clearChartSelection]);
   useEffect(() => {
     const clearSelection = (event: KeyboardEvent) => {
-      if (event.key === "Escape") clearBreakdownSelection();
+      if (event.key === "Escape") {
+        clearBreakdownSelection();
+        clearChartSelection();
+      }
     };
     const clearOutsideSelection = (event: MouseEvent) => {
-      if (!(event.target instanceof Element) || !event.target.closest(".category-list button, .donut .recharts-sector, .bar-chart")) clearBreakdownSelection();
+      if (!(event.target instanceof Element) || !event.target.closest(".category-list button, .donut .recharts-sector, .chart-panel")) clearBreakdownSelection();
     };
     window.addEventListener("keydown", clearSelection);
     window.addEventListener("mousedown", clearOutsideSelection);
@@ -682,13 +703,17 @@ function Dashboard({ data, topics, coverage, selectedMonthData, monthBusy, onMon
       window.removeEventListener("keydown", clearSelection);
       window.removeEventListener("mousedown", clearOutsideSelection);
     };
-  }, [clearBreakdownSelection]);
+  }, [clearBreakdownSelection, clearChartSelection]);
   if (!data || !data.available_periods.length) return <EmptyState />;
   const activeRange = rangeLabel(data.range_start, data.range_end);
   const breakdownRange = rangeLabel(breakdownData?.range_start ?? data.range_start, breakdownData?.range_end ?? data.range_end);
   const positiveBreakdown = breakdown.filter((item) => item.value > 0);
-  const chartRows = breakdownMode === "topic" ? topicRows : labelRows;
-  const chartSeries = breakdownMode === "topic" ? topicSeries : labelSeries;
+  const allChartSeries = breakdownMode === "topic" ? topicSeries : labelSeries;
+  const chartSeries = selectedChartSeries.size ? allChartSeries.filter(({ key }) => selectedChartSeries.has(key)) : allChartSeries;
+  const chartRows = (breakdownMode === "topic" ? topicRows : labelRows).map((row) => ({
+    ...row,
+    netTotal: selectedChartSeries.size ? Number(chartSeries.reduce((total, { key }) => total + Number(row[key] ?? 0), 0).toFixed(2)) : row.netTotal,
+  }));
   return (
     <div className="dashboard">
       <section className="kpi-grid">
@@ -698,11 +723,11 @@ function Dashboard({ data, topics, coverage, selectedMonthData, monthBusy, onMon
         <Kpi label="Needs review" value={String(data.pending)} detail={data.pending ? "Help improve future imports" : "Everything is categorized"} icon={data.pending ? <CircleHelp /> : <Check />} tone={data.pending ? "warning" : "good"} />
       </section>
 
-      <MonthlySpendChart title={`Net monthly spend by ${breakdownMode}`} range={activeRange} rows={chartRows} series={chartSeries} yDomain={yDomain} mode={breakdownMode} onModeChange={changeBreakdownMode} monthBusy={monthBusy} selectedMonth={selectedMonthData?.period ?? null} onMonthSelect={onMonthSelect} note={`Wide stacks show ${breakdownMode} totals · Narrow dark columns show net monthly spend`} />
+      <MonthlySpendChart title={`Net monthly spend by ${breakdownMode}`} range={activeRange} rows={chartRows} series={chartSeries} allSeries={allChartSeries} selectedSeries={selectedChartSeries} yDomain={yDomain} mode={breakdownMode} onModeChange={changeBreakdownMode} onSeriesToggle={toggleChartSeries} onClearSeries={clearChartSelection} monthBusy={monthBusy} selectedMonth={selectedMonthData?.period ?? null} onMonthSelect={onMonthSelect} />
 
       <div className="lower-grid">
         <section className="panel category-panel">
-          <div className="panel-heading"><div><p className="eyebrow">BREAKDOWN</p><PanelTitle title={`Net by ${breakdownMode}`} range={breakdownRange} /></div><div className="breakdown-actions">{selectedMonthData && <button className="clear-month" aria-label="Show full overview range" onClick={onClearMonth}>All months</button>}<BreakdownToggle mode={breakdownMode} onChange={changeBreakdownMode} /></div></div>
+          <div className="panel-heading"><div><p className="eyebrow">BREAKDOWN</p><PanelTitle title={`Net by ${breakdownMode}`} range={breakdownRange} /></div><BreakdownToggle mode={breakdownMode} onChange={changeBreakdownMode} /></div>
           <div className="category-content">
             <div className="donut"><ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={positiveBreakdown} dataKey="value" innerRadius={60} outerRadius={82} paddingAngle={2}>{positiveBreakdown.map((item) => <Cell key={item.key} fill={item.color} opacity={!selectedBreakdown.size || selectedBreakdown.has(item.key) ? 1 : 0.35} stroke={selectedBreakdown.has(item.key) ? "#202329" : "#fff"} strokeWidth={selectedBreakdown.has(item.key) ? 2 : 1} style={{ cursor: "pointer" }} onMouseEnter={() => setPieTooltipOpen(true)} onMouseLeave={() => setPieTooltipOpen(false)} onClick={() => {
               const wasSelected = selectedBreakdown.has(item.key);
@@ -715,43 +740,51 @@ function Dashboard({ data, topics, coverage, selectedMonthData, monthBusy, onMon
             <div className="category-list">{breakdown.map((item) => <button className={selectedBreakdown.has(item.key) ? "selected" : ""} key={item.key} aria-pressed={selectedBreakdown.has(item.key)} onClick={() => { setPieTooltipOpen(false); toggleBreakdown(item.key); }}><span><i style={{ background: item.color }} />{item.name}</span><strong className={item.value < 0 ? "net-credit" : ""}>{euro.format(item.value)}</strong></button>)}</div>
           </div>
         </section>
-        <section className="panel recent-panel"><div className="panel-heading"><div><p className="eyebrow">ACTIVITY</p><PanelTitle title="Recent transactions" range={breakdownRange} /></div>{selectedBreakdown.size > 0 && <button className="clear-category-filter" onClick={clearBreakdownSelection}>Clear filter</button>}</div>{recentTransactions.length ? <TransactionRows items={recentTransactions} /> : <div className="no-recent-transactions"><Search /><strong>No recent transactions</strong><span>{selectedBreakdown.size ? `Try selecting another ${breakdownMode}.` : "There are no transactions in this period."}</span></div>}</section>
+        <section className="panel recent-panel"><div className="panel-heading"><div><p className="eyebrow">ACTIVITY</p><PanelTitle title="Recent transactions" range={breakdownRange} /></div>{selectedBreakdown.size > 0 && <button className="clear-category-filter" onClick={clearBreakdownSelection}>Clear filter</button>}</div>{recentTransactions.length ? <EditableTransactionRows items={recentTransactions} categories={topics} onSaved={onTransactionSaved} /> : <div className="no-recent-transactions"><Search /><strong>No recent transactions</strong><span>{selectedBreakdown.size ? `Try selecting another ${breakdownMode}.` : "There are no transactions in this period."}</span></div>}</section>
       </div>
       <CoverageTimeline coverage={coverage} rangeStart={data.is_custom ? data.range_start : undefined} rangeEnd={data.is_custom ? data.range_end : undefined} />
     </div>
   );
 }
 
-function MonthlySpendChart({ title, range, rows, series, yDomain, mode, onModeChange, monthBusy, selectedMonth, onMonthSelect, note }: { title: string; range: string; rows: MonthlyChartRow[]; series: MonthlySeries[]; yDomain: [number, number]; mode: BreakdownMode; onModeChange: (mode: BreakdownMode) => void; monthBusy: boolean; selectedMonth: string | null; onMonthSelect: (month: string) => Promise<void>; note: string }) {
+function SelectedMonthBand({ x1, monthCount }: { x1?: number; monthCount: number }) {
+  const plot = usePlotArea();
+  if (!plot || x1 === undefined || !monthCount) return null;
+  const width = plot.width / monthCount - 12;
+  return <rect className="selected-month-band" x={x1 - width / 2} y={plot.y} width={width} height={plot.height} rx={8} fill="#efedf7" pointerEvents="none" />;
+}
+
+function MonthlySpendChart({ title, range, rows, series, allSeries, selectedSeries, yDomain, mode, onModeChange, onSeriesToggle, onClearSeries, monthBusy, selectedMonth, onMonthSelect }: { title: string; range: string; rows: MonthlyChartRow[]; series: MonthlySeries[]; allSeries: MonthlySeries[]; selectedSeries: Set<string>; yDomain: [number, number]; mode: BreakdownMode; onModeChange: (mode: BreakdownMode) => void; onSeriesToggle: (key: string) => void; onClearSeries: () => void; monthBusy: boolean; selectedMonth: string | null; onMonthSelect: (month: string) => Promise<void> }) {
   const renderMonthTick = ({ x, y, payload }: XAxisTickContentProps) => {
     const month = String(payload.value);
     const select = () => void onMonthSelect(month);
     return <g className="month-axis-tick" role="button" tabIndex={0} aria-label={`Show ${monthLabel(month)} breakdown`} aria-pressed={selectedMonth === month} onClick={select} onKeyDown={(event) => {
       if (event.key === "Enter" || event.key === " ") { event.preventDefault(); select(); }
     }}>
-      <rect x={Number(x) - 22} y={Number(y) - 8} width={44} height={24} fill="transparent" />
+      <rect x={Number(x) - 22} y={Number(y) - 8} width={44} height={24} rx={5} fill={selectedMonth === month ? "#efedf7" : "transparent"} />
       <text x={x} y={Number(y) + 4} textAnchor="middle" fill={selectedMonth === month ? "#29243A" : "#8b8f99"} fontSize={12} fontWeight={selectedMonth === month ? 700 : 400}>{shortMonth(month)}</text>
     </g>;
   };
   return <section className="panel chart-panel">
-    <div className="panel-heading"><div><p className="eyebrow">SPENDING HISTORY</p><PanelTitle title={title} range={range} /></div><div className="chart-heading-actions"><span>{monthBusy ? "Loading month…" : "Select a month for its breakdown"}</span><BreakdownToggle mode={mode} onChange={onModeChange} /></div></div>
+    <div className="panel-heading"><div><p className="eyebrow">SPENDING HISTORY</p><PanelTitle title={title} range={range} /></div><div className="chart-heading-actions"><span>{monthBusy ? "Loading month…" : "Select a month for its breakdown"}</span>{selectedSeries.size > 0 && <button type="button" className="clear-chart-filter" onClick={onClearSeries}>Clear filters</button>}<BreakdownToggle mode={mode} onChange={onModeChange} /></div></div>
     <div className="bar-chart"><ResponsiveContainer width="100%" height="100%"><BarChart accessibilityLayer={false} data={rows} margin={{ top: 20, right: 8, left: -12, bottom: 0 }} stackOffset="sign" barGap={-22} onClick={({ activeLabel }, event) => {
       if (event.target instanceof Element && event.target.closest(".recharts-bar-rectangle") && typeof activeLabel === "string") void onMonthSelect(activeLabel);
     }}>
+      {selectedMonth && <ReferenceLine x={selectedMonth} zIndex={-150} shape={<SelectedMonthBand monthCount={rows.length} />} />}
       <CartesianGrid vertical={false} stroke="#e8e7e3" />
       <XAxis dataKey="month" axisLine={false} tickLine={false} tick={renderMonthTick} />
       <YAxis domain={yDomain} tickFormatter={(value) => compactEuro.format(value)} axisLine={false} tickLine={false} tick={{ fill: "#8b8f99", fontSize: 12 }} />
       <ReferenceLine y={0} stroke="#a5a7aa" strokeWidth={1.2} />
-      <Tooltip cursor={{ fill: "#f6f5f2" }} content={({ active, label }) => {
+      <Tooltip cursor={false} content={({ active, label }) => {
         const month = rows.find((row) => row.month === label);
         if (!active || !month) return null;
-        return <div className="monthly-tooltip"><strong>{monthLabel(String(label))}</strong><ul>{series.filter(({ key }) => Number(month[key] ?? 0) !== 0).map(({ key, name, color }) => <li key={key}><span><i style={{ background: color }} />{name}</span><b>{euro.format(Number(month[key]))}</b></li>)}</ul><footer><span>Net total</span><b>{euro.format(month.netTotal)}</b></footer></div>;
+        return <div className="monthly-tooltip"><strong>{monthLabel(String(label))}</strong><ul>{series.filter(({ key }) => Number(month[key] ?? 0) !== 0).map(({ key, name, color }) => <li key={key}><span><i style={{ background: color }} />{name}</span><b>{euro.format(Number(month[key]))}</b></li>)}</ul><footer><span>{selectedSeries.size ? "Selected net" : "Net total"}</span><b>{euro.format(month.netTotal)}</b></footer></div>;
       }} />
       {series.map(({ key, color }) => <Bar key={key} dataKey={key} stackId="spend" barSize={34} fill={color} fillOpacity={0.52} />)}
       <Bar dataKey="netTotal" barSize={10} radius={[3, 3, 3, 3]} zIndex={400}>{rows.map((row) => <Cell key={row.month} fill={row.netTotal < 0 ? "#9E395F" : "#29243A"} />)}</Bar>
     </BarChart></ResponsiveContainer></div>
-    <div className="legend">{series.map(({ key, name, color }) => <span key={key}><i style={{ background: color }} />{name}</span>)}<span className="net-total-legend"><i />Net total</span></div>
-    <div className="chart-note">{note}</div>
+    <div className="legend" aria-label={`Filter monthly spending by ${mode}`}>{allSeries.map(({ key, name, color }) => <button type="button" key={key} className={selectedSeries.size ? selectedSeries.has(key) ? "selected" : "dimmed" : ""} aria-pressed={selectedSeries.has(key)} onClick={() => onSeriesToggle(key)}><i style={{ background: color }} />{name}</button>)}<span className="net-total-legend"><i />{selectedSeries.size ? "Selected net" : "Net total"}</span></div>
+    <div className="chart-note" aria-live="polite">{selectedSeries.size ? `Showing ${allSeries.filter(({ key }) => selectedSeries.has(key)).map(({ name }) => name).join(" + ")} · Narrow dark columns show selected net spend` : `Wide stacks show ${mode} totals · Narrow dark columns show net monthly spend`}</div>
   </section>;
 }
 
@@ -831,8 +864,6 @@ function TransactionList({ initialItems, categories }: { initialItems: Transacti
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [filtersApplied, setFiltersApplied] = useState(false);
-  const [topicEdit, setTopicEdit] = useState<{ transactionId: number; description: string; categoryId: number | null; additionalCategoryIds: number[]; transactionLabel: string } | null>(null);
-  const [topicSaving, setTopicSaving] = useState(false);
   const [exclusionBusy, setExclusionBusy] = useState<number | null>(null);
   const [excludeCandidate, setExcludeCandidate] = useState<Transaction | null>(null);
   const topicRows = useMemo(() => taxonomyRows(categories), [categories]);
@@ -889,39 +920,6 @@ function TransactionList({ initialItems, categories }: { initialItems: Transacti
       .finally(() => setLoading(false));
   };
 
-  const editTopics = (item: Transaction) => setTopicEdit({
-    transactionId: item.id,
-    description: item.ai_description ?? "",
-    categoryId: item.category_id ?? item.proposed_category_id,
-    additionalCategoryIds: (item.additional_categories.length ? item.additional_categories : item.proposed_additional_categories).map((topic) => topic.id),
-    transactionLabel: item.transaction_label ?? "",
-  });
-
-  const toggleEditTopic = (categoryId: number) => setTopicEdit((current) => {
-    if (!current) return current;
-    const selected = current.additionalCategoryIds.includes(categoryId);
-    return { ...current, additionalCategoryIds: selected ? current.additionalCategoryIds.filter((id) => id !== categoryId) : [...current.additionalCategoryIds, categoryId] };
-  });
-
-  const saveTopics = async () => {
-    if (!topicEdit?.categoryId || !topicEdit.description.trim()) return;
-    setTopicSaving(true);
-    setError("");
-    try {
-      const updated = await apiRequest<Transaction>(`/api/transactions/${topicEdit.transactionId}/topics`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ description: topicEdit.description.trim(), category_id: topicEdit.categoryId, additional_category_ids: topicEdit.additionalCategoryIds, transaction_label: topicEdit.transactionLabel.trim() }),
-      });
-      setItems((current) => current.map((item) => item.id === updated.id ? updated : item));
-      setTopicEdit(null);
-    } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "Unable to update topics");
-    } finally {
-      setTopicSaving(false);
-    }
-  };
-
   const setExcluded = async (item: Transaction, excluded: boolean) => {
     setExclusionBusy(item.id);
     setError("");
@@ -933,7 +931,6 @@ function TransactionList({ initialItems, categories }: { initialItems: Transacti
       });
       setItems((current) => current.map((candidate) => candidate.id === updated.id ? updated : candidate));
       if (excluded) {
-        if (topicEdit?.transactionId === item.id) setTopicEdit(null);
         setExcludeCandidate(null);
       }
     } catch (requestError) {
@@ -957,13 +954,76 @@ function TransactionList({ initialItems, categories }: { initialItems: Transacti
       </div>
       {error && <div className="filter-error">{error}</div>}
     </section>
-    <section className="panel full-list"><div className="table-title"><div><ReceiptText /><span>{loading ? "Finding transactions…" : `${items.length} ${items.length === 1 ? "transaction" : "transactions"}`}</span></div>{filtersApplied && !loading && <div className="filtered-total"><span>Filtered total</span><strong className={filteredTotal >= 0 ? "income" : ""}>{signedEuro(filteredTotal)}</strong></div>}</div>{!loading && (items.length ? <div className="transaction-list">{items.map((item) => <div className="transaction-edit-entry" key={item.id}><TransactionRow item={item} showStatus action={<div className="transaction-actions">{item.status !== "excluded" && <button className="edit-transaction-topics" aria-label={`Edit transaction details for ${item.merchant}`} title="Edit transaction details" onClick={() => editTopics(item)}><Tags /></button>}{item.status !== "excluded" && <button className="exclude-transaction" aria-label={`Exclude ${item.merchant}`} data-tooltip="Exclude" disabled={exclusionBusy === item.id} onClick={() => setExcludeCandidate(item)}>{exclusionBusy === item.id ? <LoaderCircle className="spinner" /> : <Ban />}</button>}{item.status === "excluded" && item.exclusion_reason === "manual" && <button className="restore-transaction" aria-label={`Restore ${item.merchant}`} title="Restore to analytics" disabled={exclusionBusy === item.id} onClick={() => void setExcluded(item, false)}>{exclusionBusy === item.id ? <LoaderCircle className="spinner" /> : <RotateCcw />}</button>}</div>} />{topicEdit?.transactionId === item.id && <div className="transaction-topic-editor"><label className="transaction-description-editor"><span>Description</span><textarea aria-label={`Edited description for ${item.merchant}`} maxLength={160} placeholder="Add a short description" value={topicEdit.description} onChange={(event) => setTopicEdit({ ...topicEdit, description: event.target.value })} /></label><TopicAssignmentPicker categories={categories} primaryId={topicEdit.categoryId} contextIds={topicEdit.additionalCategoryIds} label={item.merchant} onPrimary={(categoryId) => setTopicEdit({ ...topicEdit, categoryId, additionalCategoryIds: topicEdit.additionalCategoryIds.filter((id) => id !== categoryId) })} onContext={toggleEditTopic} transactionLabel={topicEdit.transactionLabel} onTransactionLabel={(value) => setTopicEdit({ ...topicEdit, transactionLabel: value })} /><div className="transaction-topic-actions"><button className="cancel-topic-edit" disabled={topicSaving} onClick={() => setTopicEdit(null)}>Cancel</button><button disabled={topicSaving || !topicEdit.description.trim() || !topicEdit.categoryId} onClick={() => void saveTopics()}>{topicSaving ? <LoaderCircle className="spinner" /> : <Check />}Save changes</button></div></div>}</div>)}</div> : <div className="no-filter-results"><Search /><strong>No matching transactions</strong><span>Try clearing or broadening a filter.</span></div>)}</section>
+    <section className="panel full-list">
+      <div className="table-title"><div><ReceiptText /><span>{loading ? "Finding transactions…" : `${items.length} ${items.length === 1 ? "transaction" : "transactions"}`}</span></div>{filtersApplied && !loading && <div className="filtered-total"><span>Filtered total</span><strong className={filteredTotal >= 0 ? "income" : ""}>{signedEuro(filteredTotal)}</strong></div>}</div>
+      {!loading && (items.length ? <EditableTransactionRows items={items} categories={categories} showStatus onSaved={(updated) => setItems((current) => current.map((item) => item.id === updated.id ? updated : item))} extraActions={(item) => <>
+        {item.status !== "excluded" && <button className="exclude-transaction" aria-label={`Exclude ${item.merchant}`} data-tooltip="Exclude" disabled={exclusionBusy === item.id} onClick={() => setExcludeCandidate(item)}>{exclusionBusy === item.id ? <LoaderCircle className="spinner" /> : <Ban />}</button>}
+        {item.status === "excluded" && item.exclusion_reason === "manual" && <button className="restore-transaction" aria-label={`Restore ${item.merchant}`} title="Restore to analytics" disabled={exclusionBusy === item.id} onClick={() => void setExcluded(item, false)}>{exclusionBusy === item.id ? <LoaderCircle className="spinner" /> : <RotateCcw />}</button>}
+      </>} /> : <div className="no-filter-results"><Search /><strong>No matching transactions</strong><span>Try clearing or broadening a filter.</span></div>)}
+    </section>
     {excludeCandidate && <ExclusionDialog item={excludeCandidate} busy={exclusionBusy === excludeCandidate.id} onCancel={() => setExcludeCandidate(null)} onConfirm={() => void setExcluded(excludeCandidate, true)} />}
   </div>;
 }
 
-function TransactionRows({ items }: { items: Transaction[] }) {
-  return <div className="transaction-list">{items.map((item) => <TransactionRow item={item} key={item.id} />)}</div>;
+type TransactionEdit = { transactionId: number; description: string; categoryId: number | null; additionalCategoryIds: number[]; transactionLabel: string };
+
+function EditableTransactionRows({ items, categories, onSaved, showStatus = false, extraActions }: { items: Transaction[]; categories: Category[]; onSaved: (item: Transaction) => void; showStatus?: boolean; extraActions?: (item: Transaction) => React.ReactNode }) {
+  const [edit, setEdit] = useState<TransactionEdit | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (edit && !items.some((item) => item.id === edit.transactionId && item.status !== "excluded")) setEdit(null);
+  }, [items, edit]);
+
+  const startEdit = (item: Transaction) => {
+    setError("");
+    setEdit({
+      transactionId: item.id,
+      description: item.ai_description ?? "",
+      categoryId: item.category_id ?? item.proposed_category_id,
+      additionalCategoryIds: (item.additional_categories.length ? item.additional_categories : item.proposed_additional_categories).map((topic) => topic.id),
+      transactionLabel: item.transaction_label ?? "",
+    });
+  };
+
+  const toggleContext = (categoryId: number) => setEdit((current) => {
+    if (!current) return current;
+    const selected = current.additionalCategoryIds.includes(categoryId);
+    return { ...current, additionalCategoryIds: selected ? current.additionalCategoryIds.filter((id) => id !== categoryId) : [...current.additionalCategoryIds, categoryId] };
+  });
+
+  const save = async () => {
+    if (!edit?.categoryId || !edit.description.trim()) return;
+    setSaving(true);
+    setError("");
+    try {
+      const updated = await apiRequest<Transaction>(`/api/transactions/${edit.transactionId}/topics`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ description: edit.description.trim(), category_id: edit.categoryId, additional_category_ids: edit.additionalCategoryIds, transaction_label: edit.transactionLabel.trim() }),
+      });
+      onSaved(updated);
+      setEdit(null);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Unable to update transaction details");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return <div className="transaction-list">{items.map((item) => <div className="transaction-edit-entry" key={item.id}>
+    <TransactionRow item={item} showStatus={showStatus} action={<div className="transaction-actions">
+      {item.status !== "excluded" && <button className="edit-transaction-topics" aria-label={`Edit transaction details for ${item.merchant}`} title="Edit transaction details" onClick={() => startEdit(item)}><Tags /></button>}
+      {extraActions?.(item)}
+    </div>} />
+    {edit?.transactionId === item.id && <div className="transaction-topic-editor">
+      <label className="transaction-description-editor"><span>Description</span><textarea aria-label={`Edited description for ${item.merchant}`} maxLength={160} placeholder="Add a short description" value={edit.description} onChange={(event) => setEdit({ ...edit, description: event.target.value })} /></label>
+      <TopicAssignmentPicker categories={categories} primaryId={edit.categoryId} contextIds={edit.additionalCategoryIds} label={item.merchant} onPrimary={(categoryId) => setEdit({ ...edit, categoryId, additionalCategoryIds: edit.additionalCategoryIds.filter((id) => id !== categoryId) })} onContext={toggleContext} transactionLabel={edit.transactionLabel} onTransactionLabel={(value) => setEdit({ ...edit, transactionLabel: value })} />
+      <div className="transaction-topic-actions"><button className="cancel-topic-edit" disabled={saving} onClick={() => setEdit(null)}>Cancel</button><button disabled={saving || !edit.description.trim() || !edit.categoryId} onClick={() => void save()}>{saving ? <LoaderCircle className="spinner" /> : <Check />}Save changes</button></div>
+      {error && <div className="transaction-edit-error" role="alert">{error}</div>}
+    </div>}
+  </div>)}</div>;
 }
 
 function TransactionRow({ item, showStatus = false, action }: { item: Transaction; showStatus?: boolean; action?: React.ReactNode }) {
